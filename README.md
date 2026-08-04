@@ -66,7 +66,7 @@ The app's per-display configuration is shared with the `.saver` module. macOS mu
 
 ## Build locally
 
-Requires macOS 14 or newer and Apple's command-line developer tools.
+Requires macOS 14 or newer and Apple's command-line developer tools. Building the app only needs the command-line tools; running the XCTest suite requires a full Xcode installation because XCTest is not included in the standalone command-line tools.
 
 ```sh
 ./scripts/package-app.sh release
