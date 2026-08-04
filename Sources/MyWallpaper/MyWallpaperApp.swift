@@ -10,7 +10,7 @@ struct MyWallpaperApp: App {
         WindowGroup("My Wallpaper", id: "main") {
             ContentView(store: store)
                 .frame(minWidth: 1_040, minHeight: 680)
-                .preferredColorScheme(.dark)
+                .preferredColorScheme(.light)
         }
         .windowStyle(.hiddenTitleBar)
         .commands {
@@ -20,15 +20,32 @@ struct MyWallpaperApp: App {
         MenuBarExtra {
             MenuBarMenu(store: store)
         } label: {
-            Label("My Wallpaper", systemImage: "play.rectangle.fill")
+            MenuBarIconView()
         }
         .menuBarExtraStyle(.menu)
 
         Settings {
             SettingsView(store: store)
                 .frame(width: 520)
-                .preferredColorScheme(.dark)
+                .preferredColorScheme(.light)
         }
+    }
+}
+
+private struct MenuBarIconView: View {
+    var body: some View {
+        Group {
+            if let image = MenuBarIcon.image {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.none)
+                    .scaledToFit()
+            } else {
+                Image(systemName: "play.rectangle")
+            }
+        }
+        .frame(width: 18, height: 18)
+        .accessibilityLabel("My Wallpaper")
     }
 }
 

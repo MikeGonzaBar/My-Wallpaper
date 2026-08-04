@@ -1,8 +1,10 @@
 # My Wallpaper
 
-![My Wallpaper icon](assets/MyWallpaperIcon.png)
+<img src="assets/MyWallpaperIcon.png" alt="My Wallpaper icon" width="160">
 
 My Wallpaper is a native macOS app for assigning your own videos to each display. Each display can use one video or an ordered playlist, with a chosen starting video and continuous looping.
+
+The interface follows a classic System 1984 visual language: monochrome controls, pixel-sharp borders, striped window bars, inverse selections, and the custom compact-Mac video icon.
 
 ## Prototype status
 
@@ -39,7 +41,7 @@ For a drag-to-Applications installer, download **My-Wallpaper.dmg** from the Git
 
 ## Menu-bar screen saver and lock
 
-My Wallpaper adds a small screen/play icon to the macOS menu bar while the app is running. Its actions are:
+My Wallpaper adds a transparent monochrome version of its classic Mac icon to the macOS menu bar while the app is running. Its actions are:
 
 - **Start Screen Saver**: starts the videos configured in My Wallpaper directly on every display. It does not depend on whichever Apple screen saver is currently selected. Allow a few seconds for the first video frame to load; the first four seconds intentionally ignore the launch click so the screen saver does not immediately dismiss itself.
 - **Lock Mac Now**: uses macOS display sleep and the Mac's Lock Screen policy. It does not require Accessibility permission.
@@ -89,6 +91,12 @@ To build only the screen-saver bundle:
 ```
 
 The bundle is written under `.build/screensaver/release/My Wallpaper.saver`.
+
+To regenerate the app icon assets from the tracked source artwork:
+
+```sh
+./scripts/build-icon.sh
+```
 
 To create the installer DMG locally after building:
 

@@ -17,3 +17,7 @@ xcuserdata/
 *.xcuserstate
 *.swp
 *~
+
+# Local Python helper cache
+__pycache__/
+*.py[cod]

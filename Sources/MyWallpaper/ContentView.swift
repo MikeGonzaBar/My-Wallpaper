@@ -7,22 +7,21 @@ struct ContentView: View {
     @ObservedObject var store: WallpaperStore
     @State private var selectedScreenID: String?
     @State private var isPickingVideo = false
+    @State private var isPreviewReady = false
+    @State private var hasPreviewLoadingMinimumElapsed = false
     @State private var selectedSection = SidebarSection.displays
 
     var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: [Color(hex: 0x171A24), Color(hex: 0x0B0C12)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
-
-            HStack(spacing: 0) {
-                sidebar
-                mainContent
-            }
+        HStack(spacing: 0) {
+            sidebar
+            Rectangle()
+                .fill(RetroPalette.ink)
+                .frame(width: 1)
+            mainContent
         }
+        .background(RetroPalette.desktop)
+        .foregroundStyle(RetroPalette.ink)
+        .environment(\.font, RetroFont.body())
         .fileImporter(
             isPresented: $isPickingVideo,
             allowedContentTypes: [.movie],
@@ -38,7 +37,7 @@ struct ContentView: View {
             }
         }
         .alert(
-            "My Wallpaper needs attention",
+            "MY WALLPAPER NEEDS ATTENTION",
             isPresented: Binding(
                 get: { store.errorMessage != nil },
                 set: { if !$0 { store.clearError() } }
@@ -52,26 +51,33 @@ struct ContentView: View {
 
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 11) {
+            VStack(alignment: .leading, spacing: 12) {
                 Image(nsImage: NSApp.applicationIconImage)
                     .resizable()
+                    .interpolation(.none)
                     .scaledToFit()
-                    .frame(width: 36, height: 36)
-                Text("My Wallpaper")
-                    .font(.system(size: 17, weight: .semibold))
-            }
-            .padding(.bottom, 34)
+                    .frame(width: 72, height: 72)
+                    .overlay { Rectangle().stroke(RetroPalette.ink, lineWidth: 1) }
 
-            SidebarItem(
-                title: "Displays",
-                icon: "display.2",
+                Text("MY WALLPAPER")
+                    .font(RetroFont.headline(size: 18))
+                Text("VIDEO SCREEN SYSTEM")
+                    .font(RetroFont.label(size: 9))
+                    .foregroundStyle(RetroPalette.secondaryInk)
+            }
+            .padding(.bottom, 28)
+
+            RetroNavigationItem(
+                marker: "01",
+                title: "DISPLAYS",
                 selected: selectedSection == .displays
             ) {
                 selectedSection = .displays
             }
-            SidebarItem(
-                title: "Preferences",
-                icon: "slider.horizontal.3",
+
+            RetroNavigationItem(
+                marker: "02",
+                title: "PREFERENCES",
                 selected: selectedSection == .preferences
             ) {
                 selectedSection = .preferences
@@ -80,22 +86,20 @@ struct ContentView: View {
             Spacer()
 
             VStack(alignment: .leading, spacing: 8) {
-                Label("Runs privately on your Mac", systemImage: "lock.fill")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
-                Text("Your videos never leave this device.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
+                RetroDivider()
+                Text("LOCAL PROCESS")
+                    .font(RetroFont.label(size: 9))
+                Text("VIDEOS NEVER LEAVE\nTHIS MACINTOSH.")
+                    .font(RetroFont.body(size: 9))
+                    .foregroundStyle(RetroPalette.secondaryInk)
+                    .lineSpacing(3)
             }
         }
-        .padding(.top, 52)
-        .padding(.horizontal, 22)
-        .padding(.bottom, 24)
-        .frame(width: 236)
-        .background(.black.opacity(0.18))
-        .overlay(alignment: .trailing) {
-            Rectangle().fill(.white.opacity(0.06)).frame(width: 1)
-        }
+        .padding(.top, 24)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 20)
+        .frame(width: 216)
+        .background(RetroPalette.surfaceDim)
     }
 
     @ViewBuilder
@@ -110,201 +114,214 @@ struct ContentView: View {
 
     private var displaysContent: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Screensaver studio")
-                            .font(.system(size: 30, weight: .bold, design: .rounded))
-                        Text("Give every display its own video or looping playlist.")
-                            .font(.system(size: 14))
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    StatusPill(text: store.statusText, active: store.isScreenSaverInstalled)
+            VStack(alignment: .leading, spacing: 20) {
+                RetroPageHeader(
+                    code: "SYS/01",
+                    title: "DISPLAY CONTROL",
+                    subtitle: "ASSIGN A VIDEO SIGNAL TO EACH CONNECTED SCREEN."
+                ) {
+                    RetroStatusBadge(text: store.statusText, active: store.isScreenSaverInstalled)
                 }
 
                 displayPicker
 
                 if let selectedScreenID {
-                    preview(for: selectedScreenID)
-                    playlistCard(for: selectedScreenID)
+                    RetroWindow(title: "LIVE PREVIEW // \(store.configuration(for: selectedScreenID).screenName.uppercased())") {
+                        preview(for: selectedScreenID)
+                    }
+
+                    playlistWindow(for: selectedScreenID)
                 } else {
-                    ContentUnavailableView(
-                        "No displays detected",
-                        systemImage: "display.trianglebadge.exclamationmark",
-                        description: Text("Reconnect a display, then reopen My Wallpaper.")
-                    )
-                    .frame(maxWidth: .infinity, minHeight: 360)
+                    RetroWindow(title: "NO DISPLAY SIGNAL") {
+                        VStack(spacing: 16) {
+                            Text("[ DISPLAY NOT FOUND ]")
+                                .font(RetroFont.headline(size: 20))
+                            Text("RECONNECT A DISPLAY, THEN REOPEN MY WALLPAPER.")
+                                .font(RetroFont.body(size: 11))
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 280)
+                    }
                 }
             }
-            .padding(.top, 50)
-            .padding(.horizontal, 34)
-            .padding(.bottom, 34)
+            .padding(24)
         }
+        .background(RetroPalette.desktop)
     }
 
     private var preferencesContent: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Preferences")
-                            .font(.system(size: 30, weight: .bold, design: .rounded))
-                        Text("Connect My Wallpaper to macOS and tune playback.")
-                            .font(.system(size: 14))
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    StatusPill(
-                        text: store.isScreenSaverInstalled ? "Screen saver installed" : "Installation required",
+            VStack(alignment: .leading, spacing: 20) {
+                RetroPageHeader(
+                    code: "SYS/02",
+                    title: "PREFERENCES",
+                    subtitle: "SYSTEM INTEGRATION, PLAYBACK, AND PRIVACY CONTROLS."
+                ) {
+                    RetroStatusBadge(
+                        text: store.isScreenSaverInstalled ? "SCREEN SAVER INSTALLED" : "INSTALLATION REQUIRED",
                         active: store.isScreenSaverInstalled
                     )
                 }
 
-                NativeGlassSection {
-                    HStack(spacing: 22) {
-                        Image(systemName: store.isScreenSaverInstalled
-                              ? "checkmark.shield.fill"
-                              : "rectangle.and.arrow.down")
-                            .font(.system(size: 30, weight: .medium))
-                            .foregroundStyle(store.isScreenSaverInstalled ? .green : Color.accentPurple)
-                            .frame(width: 62, height: 62)
-                            .background(.white.opacity(0.09), in: RoundedRectangle(cornerRadius: 18))
+                RetroWindow(title: "SYSTEM EXTENSION") {
+                    HStack(spacing: 20) {
+                        ZStack {
+                            Rectangle()
+                                .fill(store.isScreenSaverInstalled ? RetroPalette.ink : RetroPalette.paper)
+                            Text(store.isScreenSaverInstalled ? "■" : "□")
+                                .font(RetroFont.headline(size: 24))
+                                .foregroundStyle(store.isScreenSaverInstalled ? RetroPalette.paper : RetroPalette.ink)
+                        }
+                        .frame(width: 56, height: 56)
+                        .overlay { Rectangle().stroke(RetroPalette.ink, lineWidth: 1) }
 
-                        VStack(alignment: .leading, spacing: 7) {
-                            Text("Native macOS screen saver")
-                                .font(.system(size: 18, weight: .semibold))
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("NATIVE macOS SCREEN SAVER")
+                                .font(RetroFont.headline(size: 17))
                             Text(store.isScreenSaverInstalled
-                                 ? "Installed and ready to be selected in System Settings."
-                                 : "Install the system module so macOS controls activation and secure locking.")
-                                .font(.system(size: 12))
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
+                                 ? "INSTALLED. SELECT MY WALLPAPER IN SYSTEM SETTINGS."
+                                 : "INSTALL THE MODULE FOR AUTOMATIC IDLE ACTIVATION.")
+                                .font(RetroFont.body(size: 10))
+                                .foregroundStyle(RetroPalette.secondaryInk)
                         }
 
                         Spacer(minLength: 16)
 
-                        VStack(alignment: .trailing, spacing: 9) {
-                            Button(store.isScreenSaverInstalled ? "Reinstall" : "Install Screen Saver") {
+                        VStack(alignment: .trailing, spacing: 10) {
+                            Button(store.isScreenSaverInstalled ? "REINSTALL" : "INSTALL") {
                                 store.installScreenSaver()
                             }
-                            .buttonStyle(PrimaryButtonStyle(compact: true))
+                            .buttonStyle(RetroButtonStyle(primary: true, compact: true))
 
-                            Button("Open System Settings") {
+                            Button("OPEN SYSTEM SETTINGS") {
                                 store.openScreenSaverSettings()
                             }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
+                            .buttonStyle(RetroButtonStyle(compact: true))
                         }
                     }
-                    .padding(26)
                 }
-                .frame(maxWidth: .infinity)
 
                 HStack(alignment: .top, spacing: 16) {
-                    playbackCard
-                    privacyCard
+                    playbackWindow
+                    privacyWindow
                 }
 
-                Text("After selecting My Wallpaper, configure the password delay in System Settings → Lock Screen.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
+                Text("NOTE: SET THE PASSWORD DELAY IN SYSTEM SETTINGS → LOCK SCREEN.")
+                    .font(RetroFont.label(size: 9))
+                    .foregroundStyle(RetroPalette.secondaryInk)
             }
-            .padding(.top, 50)
-            .padding(.horizontal, 34)
-            .padding(.bottom, 34)
+            .padding(24)
         }
+        .background(RetroPalette.desktop)
     }
 
     private var displayPicker: some View {
         ScrollView(.horizontal) {
-            HStack(spacing: 10) {
-                ForEach(store.availableScreens) { screen in
+            HStack(spacing: 12) {
+                ForEach(Array(store.availableScreens.enumerated()), id: \.element.id) { index, screen in
                     let configuration = store.configuration(for: screen.id)
                     let videoCount = store.videos(for: screen.id).count
                     Button {
                         selectScreen(screen.id)
                     } label: {
-                        HStack(spacing: 11) {
-                            Image(systemName: screen.id == selectedScreenID ? "display" : "rectangle.on.rectangle")
-                                .font(.system(size: 17, weight: .medium))
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(screen.name)
-                                    .font(.system(size: 12, weight: .semibold))
-                                Text(videoCount == 0
-                                     ? "Not configured"
-                                     : "\(configuration.mode.rawValue) · \(videoCount) video\(videoCount == 1 ? "" : "s")")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text(String(format: "%02d", index + 1))
+                                    .font(RetroFont.label(size: 9))
+                                Spacer()
+                                Text(screen.id == selectedScreenID ? "[ACTIVE]" : "[IDLE]")
+                                    .font(RetroFont.label(size: 8))
                             }
+                            Text(screen.name.uppercased())
+                                .font(RetroFont.label(size: 11))
+                                .lineLimit(1)
+                            Text(videoCount == 0
+                                 ? "NO SIGNAL"
+                                 : "\(configuration.mode.rawValue.uppercased()) / \(videoCount) FILE\(videoCount == 1 ? "" : "S")")
+                                .font(RetroFont.body(size: 9))
+                                .opacity(0.72)
                         }
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 14)
-                        .frame(minWidth: 180, minHeight: 54, alignment: .leading)
-                        .background(
-                            screen.id == selectedScreenID ? Color.accentPurple.opacity(0.22) : Color.white.opacity(0.05),
-                            in: RoundedRectangle(cornerRadius: 13)
-                        )
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 13)
-                                .stroke(screen.id == selectedScreenID ? Color.accentPurple : Color.white.opacity(0.07))
+                        .foregroundStyle(screen.id == selectedScreenID ? RetroPalette.paper : RetroPalette.ink)
+                        .padding(12)
+                        .frame(width: 208, height: 76, alignment: .leading)
+                        .contentShape(Rectangle())
+                        .background(screen.id == selectedScreenID ? RetroPalette.ink : RetroPalette.paper)
+                        .overlay { Rectangle().stroke(RetroPalette.ink, lineWidth: 1) }
+                        .background {
+                            Rectangle()
+                                .fill(RetroPalette.ink)
+                                .offset(x: 3, y: 3)
                         }
+                        .padding(.trailing, 3)
+                        .padding(.bottom, 3)
                     }
                     .buttonStyle(.plain)
+                    .focusable(false)
+                    .focusEffectDisabled()
                 }
             }
+            .padding(.bottom, 3)
         }
         .scrollIndicators(.hidden)
     }
 
     private func preview(for screenID: String) -> some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 22)
-                .fill(Color.black.opacity(0.45))
+            Rectangle().fill(RetroPalette.ink)
 
             if let player = store.previewPlayer {
-                PlayerPreviewView(player: player, scaling: store.settings.scaling)
-                    .clipShape(RoundedRectangle(cornerRadius: 22))
+                PlayerPreviewView(
+                    player: player,
+                    scaling: store.settings.scaling,
+                    isReadyForDisplay: $isPreviewReady
+                )
                     .onAppear { player.play() }
                     .onDisappear { player.pause() }
-                    .overlay(alignment: .bottomLeading) {
+                    .task(id: ObjectIdentifier(player)) {
+                        hasPreviewLoadingMinimumElapsed = false
+                        try? await Task.sleep(nanoseconds: 1_500_000_000)
+                        guard !Task.isCancelled else { return }
+                        hasPreviewLoadingMinimumElapsed = true
+                    }
+                    .overlay(alignment: .bottom) {
                         videoCaption(for: screenID)
                     }
+
+                if !isPreviewReady || !hasPreviewLoadingMinimumElapsed {
+                    PreviewLoadingTip()
+                        .allowsHitTesting(false)
+                }
             } else {
-                VStack(spacing: 17) {
-                    Image(systemName: "film.stack")
-                        .font(.system(size: 42, weight: .light))
-                        .foregroundStyle(.white.opacity(0.65))
-                    VStack(spacing: 5) {
-                        Text("Choose a video for this display")
-                            .font(.system(size: 18, weight: .semibold))
-                        Text("Select one video now, or switch to Playlist below.")
-                            .font(.system(size: 13))
-                            .foregroundStyle(.secondary)
-                    }
-                    Button("Choose Video…") { isPickingVideo = true }
-                        .buttonStyle(PrimaryButtonStyle())
+                VStack(spacing: 16) {
+                    Text("▶")
+                        .font(RetroFont.headline(size: 40))
+                        .foregroundStyle(RetroPalette.paper)
+                    Text("NO VIDEO SIGNAL")
+                        .font(RetroFont.headline(size: 18))
+                        .foregroundStyle(RetroPalette.paper)
+                    Text("CHOOSE ONE VIDEO OR SWITCH TO PLAYLIST MODE.")
+                        .font(RetroFont.body(size: 10))
+                        .foregroundStyle(RetroPalette.surfaceHighest)
+                    Button("CHOOSE VIDEO…") { isPickingVideo = true }
+                        .buttonStyle(RetroButtonStyle(primary: true))
                 }
             }
 
             if store.isImporting {
                 ZStack {
-                    Color.black.opacity(0.72)
+                    DitherPattern(opacity: 0.92)
                     VStack(spacing: 12) {
-                        ProgressView().controlSize(.large)
-                        Text("Preparing your videos…")
-                            .font(.system(size: 13, weight: .medium))
+                        ProgressView().controlSize(.small)
+                        Text("IMPORTING VIDEO DATA…")
+                            .font(RetroFont.label(size: 10))
+                            .padding(8)
+                            .background(RetroPalette.paper)
+                            .overlay { Rectangle().stroke(RetroPalette.ink, lineWidth: 1) }
                     }
                 }
-                .clipShape(RoundedRectangle(cornerRadius: 22))
             }
         }
         .aspectRatio(16 / 8.6, contentMode: .fit)
-        .overlay {
-            RoundedRectangle(cornerRadius: 22)
-                .stroke(.white.opacity(0.09), lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(0.35), radius: 30, y: 15)
+        .overlay { Rectangle().stroke(RetroPalette.ink, lineWidth: 1) }
     }
 
     private func videoCaption(for screenID: String) -> some View {
@@ -312,55 +329,56 @@ struct ContentView: View {
         let videos = store.videos(for: screenID)
         let startVideo = videos.first { $0.id == configuration.startVideoID } ?? videos.first
 
-        return HStack {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(startVideo?.displayName ?? "Selected video")
-                    .font(.system(size: 14, weight: .semibold))
+        return HStack(spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(startVideo?.displayName.uppercased() ?? "SELECTED VIDEO")
+                    .font(RetroFont.label(size: 10))
+                    .lineLimit(1)
                 Text(configuration.mode == .playlist
-                     ? "Starts here, then loops \(videos.count) videos"
-                     : "Loops continuously")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                     ? "STARTS HERE / LOOPS \(videos.count) FILES"
+                     : "CONTINUOUS LOOP")
+                    .font(RetroFont.body(size: 9))
+                    .foregroundStyle(RetroPalette.secondaryInk)
             }
             Spacer()
-            Button("Preview all displays") { store.screenSaver.previewFullScreen() }
-                .buttonStyle(PrimaryButtonStyle(compact: true))
+            Button("PREVIEW ALL DISPLAYS") { store.screenSaver.previewFullScreen() }
+                .buttonStyle(RetroButtonStyle(primary: true, compact: true))
         }
-        .padding(18)
-        .background(.ultraThinMaterial)
+        .padding(12)
+        .background(RetroPalette.paper)
+        .overlay(alignment: .top) { Rectangle().fill(RetroPalette.ink).frame(height: 1) }
     }
 
-    private func playlistCard(for screenID: String) -> some View {
+    private func playlistWindow(for screenID: String) -> some View {
         let configuration = store.configuration(for: screenID)
         let videos = store.videos(for: screenID)
 
-        return SettingsCard(title: "Content for \(configuration.screenName)", icon: "rectangle.stack.fill") {
+        return RetroWindow(title: "CONTENT // \(configuration.screenName.uppercased())") {
             VStack(spacing: 16) {
-                HStack {
-                    Picker("Playback type", selection: Binding(
-                        get: { store.configuration(for: screenID).mode },
-                        set: { store.setMode($0, for: screenID) }
-                    )) {
-                        ForEach(PlaybackMode.allCases) { mode in
-                            Text(mode.rawValue).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(maxWidth: 300)
+                HStack(spacing: 12) {
+                    Text("PLAYBACK TYPE")
+                        .font(RetroFont.label(size: 10))
+
+                    RetroChoiceBar(
+                        values: PlaybackMode.allCases,
+                        selected: configuration.mode,
+                        title: { $0.rawValue.uppercased() },
+                        onSelect: { store.setMode($0, for: screenID) }
+                    )
+                    .frame(maxWidth: 320)
 
                     Spacer()
 
-                    Button(configuration.mode == .single ? "Choose Video…" : "Add Videos…") {
+                    Button(configuration.mode == .single ? "CHOOSE VIDEO…" : "ADD VIDEOS…") {
                         isPickingVideo = true
                     }
-                    .buttonStyle(PrimaryButtonStyle(compact: true))
+                    .buttonStyle(RetroButtonStyle(primary: true, compact: true))
                 }
 
                 if videos.isEmpty {
-                    Text("No videos assigned to this display yet.")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+                    Text("[ NO VIDEO FILES ASSIGNED ]")
+                        .font(RetroFont.body(size: 11))
+                        .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
                 } else {
                     VStack(spacing: 0) {
                         ForEach(Array(videos.enumerated()), id: \.element.id) { index, video in
@@ -377,72 +395,63 @@ struct ContentView: View {
                                 remove: { store.removeVideo(video.id, from: screenID) }
                             )
                             if index < videos.count - 1 {
-                                Divider().overlay(.white.opacity(0.06))
+                                Rectangle().fill(RetroPalette.ink).frame(height: 1)
                             }
                         }
                     }
-                    .background(.black.opacity(0.16), in: RoundedRectangle(cornerRadius: 10))
+                    .overlay { Rectangle().stroke(RetroPalette.ink, lineWidth: 1) }
                 }
 
                 if configuration.mode == .playlist, !videos.isEmpty {
-                    Label(
-                        "The Start badge marks the first video. The playlist continues in order and loops forever.",
-                        systemImage: "repeat"
-                    )
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    Text("↻ START MARKS THE FIRST FILE. THE LIST CONTINUES IN ORDER AND LOOPS FOREVER.")
+                        .font(RetroFont.body(size: 9))
+                        .foregroundStyle(RetroPalette.secondaryInk)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }
     }
 
-    private var playbackCard: some View {
-        SettingsCard(title: "Playback", icon: "play.fill") {
-            VStack(spacing: 18) {
-                HStack {
-                    Text("Video sizing")
-                    Spacer()
-                    Picker("Video sizing", selection: Binding(
-                        get: { store.settings.scaling },
-                        set: { store.setScaling($0) }
-                    )) {
-                        ForEach(VideoScaling.allCases) { scaling in
-                            Text(scaling.rawValue).tag(scaling)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 140)
-                }
+    private var playbackWindow: some View {
+        RetroWindow(title: "PLAYBACK") {
+            VStack(alignment: .leading, spacing: 18) {
+                Text("VIDEO SIZING")
+                    .font(RetroFont.label(size: 10))
 
-                Divider().overlay(.white.opacity(0.06))
+                RetroChoiceBar(
+                    values: VideoScaling.allCases,
+                    selected: store.settings.scaling,
+                    title: { $0.rawValue.uppercased() },
+                    onSelect: { store.setScaling($0) }
+                )
 
-                Toggle("Mute audio", isOn: Binding(
-                    get: { store.settings.isMuted },
-                    set: { store.setMuted($0) }
-                ))
-                .toggleStyle(.switch)
+                RetroDivider()
+
+                RetroCheckbox(
+                    title: "MUTE AUDIO",
+                    isOn: store.settings.isMuted,
+                    action: { store.setMuted(!store.settings.isMuted) }
+                )
             }
-            .font(.system(size: 13))
         }
         .frame(maxWidth: .infinity)
     }
 
-    private var privacyCard: some View {
-        SettingsCard(title: "Privacy", icon: "hand.raised.fill") {
+    private var privacyWindow: some View {
+        RetroWindow(title: "PRIVACY") {
             VStack(alignment: .leading, spacing: 12) {
-                Label("Videos stay on this Mac", systemImage: "internaldrive.fill")
-                Label("No account or upload required", systemImage: "person.crop.circle.badge.checkmark")
-                Label("macOS handles secure locking", systemImage: "lock.fill")
+                RetroFact(marker: "■", text: "VIDEOS STAY ON THIS MAC")
+                RetroFact(marker: "■", text: "NO ACCOUNT OR UPLOAD")
+                RetroFact(marker: "■", text: "macOS HANDLES SECURE LOCKING")
             }
-            .font(.system(size: 12))
-            .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity)
     }
 
     private func selectScreen(_ screenID: String?) {
+        isPreviewReady = false
+        hasPreviewLoadingMinimumElapsed = false
         selectedScreenID = screenID
         store.selectScreen(screenID)
     }
@@ -456,24 +465,46 @@ private enum SidebarSection {
 private struct PlayerPreviewView: NSViewRepresentable {
     let player: AVPlayer
     let scaling: VideoScaling
+    @Binding var isReadyForDisplay: Bool
 
     func makeNSView(context: Context) -> PlayerPreviewNSView {
-        PlayerPreviewNSView(player: player, scaling: scaling)
+        let view = PlayerPreviewNSView(player: player, scaling: scaling)
+        configureReadinessHandler(for: view)
+        return view
     }
 
     func updateNSView(_ nsView: PlayerPreviewNSView, context: Context) {
+        configureReadinessHandler(for: nsView)
         nsView.update(player: player, scaling: scaling)
+    }
+
+    private func configureReadinessHandler(for view: PlayerPreviewNSView) {
+        view.onReadyForDisplayChange = { ready in
+            if isReadyForDisplay != ready {
+                isReadyForDisplay = ready
+            }
+        }
     }
 }
 
 private final class PlayerPreviewNSView: NSView {
     private let playerLayer = AVPlayerLayer()
+    private var readinessObservation: NSKeyValueObservation?
+    var onReadyForDisplayChange: ((Bool) -> Void)? {
+        didSet { reportReadiness(playerLayer.isReadyForDisplay) }
+    }
 
     init(player: AVPlayer, scaling: VideoScaling) {
         super.init(frame: .zero)
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.cgColor
         layer?.addSublayer(playerLayer)
+        readinessObservation = playerLayer.observe(
+            \.isReadyForDisplay,
+            options: [.initial, .new]
+        ) { [weak self] layer, _ in
+            self?.reportReadiness(layer.isReadyForDisplay)
+        }
         update(player: player, scaling: scaling)
     }
 
@@ -488,8 +519,41 @@ private final class PlayerPreviewNSView: NSView {
     }
 
     func update(player: AVPlayer, scaling: VideoScaling) {
-        playerLayer.player = player
+        if playerLayer.player !== player {
+            reportReadiness(false)
+            playerLayer.player = player
+        }
         playerLayer.videoGravity = scaling == .fill ? .resizeAspectFill : .resizeAspect
+    }
+
+    private func reportReadiness(_ ready: Bool) {
+        DispatchQueue.main.async { [weak self] in
+            self?.onReadyForDisplayChange?(ready)
+        }
+    }
+}
+
+private struct PreviewLoadingTip: View {
+    var body: some View {
+        VStack(spacing: 6) {
+            Text("LOADING VIDEO…")
+                .font(RetroFont.label(size: 11))
+            Text("FIRST FRAME MAY TAKE 1–2 SECONDS.")
+                .font(RetroFont.body(size: 9))
+                .foregroundStyle(RetroPalette.secondaryInk)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(RetroPalette.paper)
+        .overlay { Rectangle().stroke(RetroPalette.ink, lineWidth: 1) }
+        .background {
+            Rectangle()
+                .fill(RetroPalette.ink)
+                .offset(x: 3, y: 3)
+        }
+        .padding(.trailing, 3)
+        .padding(.bottom, 3)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -506,251 +570,57 @@ private struct PlaylistRow: View {
     let remove: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
-            Text("\(index + 1)")
-                .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .frame(width: 22)
-            Image(systemName: "film.fill")
-                .foregroundStyle(Color.accentPurple)
-            Text(video.displayName)
-                .font(.system(size: 12, weight: .medium))
+        HStack(spacing: 10) {
+            Text(String(format: "%02d", index + 1))
+                .font(RetroFont.label(size: 9))
+                .frame(width: 28)
+
+            Text("▣")
+                .font(RetroFont.label(size: 10))
+
+            Text(video.displayName.uppercased())
+                .font(RetroFont.body(size: 9))
                 .lineLimit(1)
+
             Spacer()
 
-            Button {
-                setAsStart()
-            } label: {
-                Label(isStartVideo ? "Start" : "Start here", systemImage: isStartVideo ? "flag.fill" : "flag")
-                    .font(.system(size: 10, weight: .semibold))
+            Button(action: setAsStart) {
+                Text(isStartVideo ? "■ START" : "□ START HERE")
+                    .font(RetroFont.label(size: 8))
+                    .frame(minWidth: 72, minHeight: 28)
+                    .contentShape(Rectangle())
             }
-            .buttonStyle(.borderless)
-            .foregroundStyle(isStartVideo ? Color.accentPurple : .secondary)
+            .buttonStyle(.plain)
 
             if allowsReordering {
-                Button(action: moveUp) { Image(systemName: "chevron.up") }
-                    .disabled(!canMoveUp)
-                Button(action: moveDown) { Image(systemName: "chevron.down") }
-                    .disabled(!canMoveDown)
+                RetroRowButton(title: "↑", disabled: !canMoveUp, action: moveUp)
+                RetroRowButton(title: "↓", disabled: !canMoveDown, action: moveDown)
             }
-            Button(role: .destructive, action: remove) {
-                Image(systemName: "trash")
-            }
+
+            RetroRowButton(title: "×", action: remove)
         }
-        .buttonStyle(.borderless)
-        .padding(.horizontal, 12)
-        .frame(minHeight: 44)
+        .padding(.horizontal, 10)
+        .frame(minHeight: 40)
+        .background(isStartVideo ? RetroPalette.surfaceHighest : RetroPalette.paper)
     }
 }
 
-private struct SidebarItem: View {
+private struct RetroRowButton: View {
     let title: String
-    let icon: String
-    let selected: Bool
+    var disabled = false
     let action: () -> Void
-    @State private var isHovering = false
 
     var body: some View {
         Button(action: action) {
-            Label(title, systemImage: icon)
-                .font(.system(size: 13, weight: selected ? .semibold : .regular))
-                .foregroundStyle(selected ? .white : .secondary)
-                .padding(.horizontal, 12)
-                .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
-                .background(
-                    selected
-                        ? Color.white.opacity(0.09)
-                        : Color.white.opacity(isHovering ? 0.045 : 0),
-                    in: RoundedRectangle(cornerRadius: 10)
-                )
+            Text(title)
+                .font(RetroFont.label(size: 10))
+                .frame(width: 22, height: 22)
                 .contentShape(Rectangle())
+                .background(disabled ? RetroPalette.surfaceHighest : RetroPalette.paper)
+                .overlay { Rectangle().stroke(RetroPalette.ink, lineWidth: 1) }
         }
         .buttonStyle(.plain)
-        .focusable(false)
-        .focusEffectDisabled()
-        .onHover { isHovering = $0 }
-    }
-}
-
-private struct NativeGlassSection<Content: View>: NSViewRepresentable {
-    let content: Content
-
-    init(@ViewBuilder content: () -> Content) {
-        self.content = content()
-    }
-
-    func makeNSView(context: Context) -> NativeGlassHostingView<Content> {
-        NativeGlassHostingView(rootView: content)
-    }
-
-    func updateNSView(_ nsView: NativeGlassHostingView<Content>, context: Context) {
-        nsView.update(rootView: content)
-    }
-}
-
-private final class NativeGlassHostingView<Content: View>: NSView {
-    private let hostingView: NSHostingView<Content>
-
-    init(rootView: Content) {
-        hostingView = NSHostingView(rootView: rootView)
-        super.init(frame: .zero)
-
-        let effectView = makeEffectView(containing: hostingView)
-        effectView.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(effectView)
-        NSLayoutConstraint.activate([
-            effectView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            effectView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            effectView.topAnchor.constraint(equalTo: topAnchor),
-            effectView.bottomAnchor.constraint(equalTo: bottomAnchor)
-        ])
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    override var intrinsicContentSize: NSSize {
-        hostingView.fittingSize
-    }
-
-    func update(rootView: Content) {
-        hostingView.rootView = rootView
-        invalidateIntrinsicContentSize()
-    }
-
-    private func makeEffectView(containing contentView: NSView) -> NSView {
-        if #available(macOS 26.0, *),
-           let glassClass = NSClassFromString("NSGlassEffectView") as? NSObject.Type,
-           let glassView = glassClass.init() as? NSView {
-            let glassObject = glassView as NSObject
-            glassObject.setValue(contentView, forKey: "contentView")
-            glassObject.setValue(NSNumber(value: 24.0), forKey: "cornerRadius")
-            glassObject.setValue(
-                NSColor.controlAccentColor.withAlphaComponent(0.12),
-                forKey: "tintColor"
-            )
-            glassObject.setValue(NSNumber(value: 0), forKey: "style")
-            return glassView
-        }
-
-        let visualEffectView = NSVisualEffectView()
-        visualEffectView.material = .hudWindow
-        visualEffectView.blendingMode = .withinWindow
-        visualEffectView.state = .active
-        visualEffectView.wantsLayer = true
-        visualEffectView.layer?.cornerRadius = 24
-        visualEffectView.layer?.masksToBounds = true
-        contentView.translatesAutoresizingMaskIntoConstraints = false
-        visualEffectView.addSubview(contentView)
-        NSLayoutConstraint.activate([
-            contentView.leadingAnchor.constraint(equalTo: visualEffectView.leadingAnchor),
-            contentView.trailingAnchor.constraint(equalTo: visualEffectView.trailingAnchor),
-            contentView.topAnchor.constraint(equalTo: visualEffectView.topAnchor),
-            contentView.bottomAnchor.constraint(equalTo: visualEffectView.bottomAnchor)
-        ])
-        return visualEffectView
-    }
-}
-
-private struct StatusPill: View {
-    let text: String
-    let active: Bool
-
-    var body: some View {
-        HStack(spacing: 7) {
-            Circle()
-                .fill(active ? Color.green : Color.white.opacity(0.4))
-                .frame(width: 7, height: 7)
-                .shadow(color: active ? .green : .clear, radius: 4)
-            Text(text)
-        }
-        .font(.system(size: 11, weight: .medium))
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.white.opacity(0.06), in: Capsule())
-        .overlay { Capsule().stroke(.white.opacity(0.08)) }
-    }
-}
-
-private struct SettingsCard<Content: View>: View {
-    let title: String
-    let icon: String
-    let content: Content
-
-    init(title: String, icon: String, @ViewBuilder content: () -> Content) {
-        self.title = title
-        self.icon = icon
-        self.content = content()
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            Label(title, systemImage: icon)
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.white)
-            content
-        }
-        .padding(20)
-        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 16))
-        .overlay { RoundedRectangle(cornerRadius: 16).stroke(.white.opacity(0.07)) }
-    }
-}
-
-private struct PrimaryButtonStyle: ButtonStyle {
-    var compact = false
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: compact ? 11 : 13, weight: .semibold))
-            .foregroundStyle(.white)
-            .padding(.horizontal, compact ? 12 : 18)
-            .padding(.vertical, compact ? 6 : 9)
-            .background(
-                Color.accentPurple.opacity(configuration.isPressed ? 0.72 : 1),
-                in: RoundedRectangle(cornerRadius: compact ? 7 : 9)
-            )
-    }
-}
-
-private extension Color {
-    static let accentPurple = Color(hex: 0x7B61FF)
-
-    init(hex: UInt32) {
-        self.init(
-            red: Double((hex >> 16) & 0xFF) / 255,
-            green: Double((hex >> 8) & 0xFF) / 255,
-            blue: Double(hex & 0xFF) / 255
-        )
-    }
-}
-
-struct SettingsView: View {
-    @ObservedObject var store: WallpaperStore
-
-    var body: some View {
-        Form {
-            Section("System Screen Saver") {
-                LabeledContent("Status") {
-                    Text(store.isScreenSaverInstalled ? "Installed" : "Not installed")
-                }
-                Button(store.isScreenSaverInstalled ? "Reinstall Screen Saver" : "Install Screen Saver") {
-                    store.installScreenSaver()
-                }
-                Button("Open Screen Saver Settings") {
-                    store.openScreenSaverSettings()
-                }
-            }
-            Section("Playback") {
-                Toggle("Mute audio", isOn: Binding(
-                    get: { store.settings.isMuted },
-                    set: { store.setMuted($0) }
-                ))
-            }
-        }
-        .formStyle(.grouped)
-        .padding()
+        .disabled(disabled)
+        .opacity(disabled ? 0.45 : 1)
     }
 }

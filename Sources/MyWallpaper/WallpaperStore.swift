@@ -317,6 +317,7 @@ final class WallpaperStore: ObservableObject {
         )
         player.isMuted = settings.isMuted
         previewPlayer = player
+        player.play()
     }
 
     private func previewVideo(for screenID: String) -> ManagedVideo? {
