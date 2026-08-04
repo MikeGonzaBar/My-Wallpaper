@@ -129,5 +129,6 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             release-assets/My-Wallpaper.dmg \
             release-assets/My-Wallpaper.app.zip \
+            --repo "$GITHUB_REPOSITORY" \
             --generate-notes \
             --title "My Wallpaper $GITHUB_REF_NAME"
