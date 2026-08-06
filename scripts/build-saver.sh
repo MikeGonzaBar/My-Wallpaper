@@ -2,6 +2,7 @@
 set -eu
 
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+. "$repo_dir/support/version.env"
 build_configuration=${1:-release}
 build_dir="$repo_dir/.build/screensaver/$build_configuration"
 saver_dir="$build_dir/My Wallpaper.saver"
@@ -40,11 +41,17 @@ clang \
     -framework AVFoundation \
     -framework CoreGraphics \
     -framework ScreenSaver \
+    -I "$repo_dir/Sources/MyWallpaperScreenSaver" \
+    "$repo_dir/Sources/MyWallpaperScreenSaver/ScreenSaverDiagnostics.m" \
+    "$repo_dir/Sources/MyWallpaperScreenSaver/ScreenSaverDisplayResolver.m" \
+    "$repo_dir/Sources/MyWallpaperScreenSaver/ScreenSaverManifest.m" \
     "$repo_dir/Sources/MyWallpaperScreenSaver/VideoScreenSaverView.m" \
     -o "$contents_dir/MacOS/MyWallpaperScreenSaver"
 
 cp "$repo_dir/support/ScreenSaver-Info.plist" "$contents_dir/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $MY_WALLPAPER_MARKETING_VERSION" "$contents_dir/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $MY_WALLPAPER_BUILD_VERSION" "$contents_dir/Info.plist"
 cp "$repo_dir/assets/MyWallpaper.icns" "$contents_dir/Resources/MyWallpaper.icns"
-codesign --force --deep --sign - "$saver_dir"
+codesign --force --sign - "$saver_dir"
 
 printf '%s\n' "$saver_dir"

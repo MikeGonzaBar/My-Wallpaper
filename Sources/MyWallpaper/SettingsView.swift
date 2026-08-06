@@ -13,24 +13,7 @@ struct SettingsView: View {
                 EmptyView()
             }
 
-            RetroWindow(title: "SYSTEM SCREEN SAVER") {
-                VStack(alignment: .leading, spacing: 14) {
-                    RetroFact(
-                        marker: store.isScreenSaverInstalled ? "■" : "□",
-                        text: store.isScreenSaverInstalled ? "MODULE INSTALLED" : "MODULE NOT INSTALLED"
-                    )
-                    HStack(spacing: 12) {
-                        Button(store.isScreenSaverInstalled ? "REINSTALL" : "INSTALL") {
-                            store.installScreenSaver()
-                        }
-                        .buttonStyle(RetroButtonStyle(primary: true, compact: true))
-                        Button("OPEN SYSTEM SETTINGS") {
-                            store.openScreenSaverSettings()
-                        }
-                        .buttonStyle(RetroButtonStyle(compact: true))
-                    }
-                }
-            }
+            ScreenSaverSetupPanel(store: store)
 
             RetroWindow(title: "PLAYBACK") {
                 RetroCheckbox(

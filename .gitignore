@@ -2,10 +2,15 @@
 .build/
 .swiftpm/
 dist/
+DerivedData/
 
 # macOS application bundles and generated screen-saver bundles
 *.app/
 *.saver/
+*.dSYM/
+*.xcarchive/
+*.xcresult/
+release-assets/
 
 # macOS metadata
 .DS_Store
@@ -15,8 +20,15 @@ dist/
 # Xcode and editor state
 xcuserdata/
 *.xcuserstate
+.idea/
+.vscode/
 *.swp
 *~
+
+# Local diagnostics and profiling output
+*.log
+*.profraw
+*.profdata
 
 # Local Python helper cache
 __pycache__/

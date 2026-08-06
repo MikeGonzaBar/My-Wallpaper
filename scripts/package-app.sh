@@ -2,6 +2,7 @@
 set -eu
 
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+. "$repo_dir/support/version.env"
 build_configuration=${1:-release}
 app_dir="$repo_dir/dist/My Wallpaper.app"
 contents_dir="$app_dir/Contents"
@@ -29,6 +30,9 @@ swiftc \
     -module-cache-path "$module_cache_dir" \
     -parse-as-library \
     "$optimization_flag" \
+    -framework CoreServices \
+    -framework IOKit \
+    -framework Security \
     -o "$binary_dir/MyWallpaper" \
     "$repo_dir"/Sources/MyWallpaper/*.swift
 
@@ -37,8 +41,10 @@ saver_dir=$("$repo_dir/scripts/build-saver.sh" "$build_configuration")
 mkdir -p "$contents_dir/MacOS" "$contents_dir/Resources"
 cp "$binary_dir/MyWallpaper" "$contents_dir/MacOS/MyWallpaper"
 cp "$repo_dir/support/Info.plist" "$contents_dir/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $MY_WALLPAPER_MARKETING_VERSION" "$contents_dir/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $MY_WALLPAPER_BUILD_VERSION" "$contents_dir/Info.plist"
 cp "$repo_dir/assets/MyWallpaper.icns" "$contents_dir/Resources/MyWallpaper.icns"
 cp -R "$saver_dir" "$contents_dir/Resources/"
-codesign --force --deep --sign - "$app_dir"
+codesign --force --options runtime --entitlements "$repo_dir/support/MyWallpaper.entitlements" --sign - "$app_dir"
 
 printf 'Created %s\n' "$app_dir"

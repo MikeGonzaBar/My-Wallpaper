@@ -28,7 +28,7 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Select full Xcode toolchain
         run: |
@@ -43,6 +43,11 @@ jobs:
 
       - name: Run Swift tests
         run: swift test
+
+      - name: Run native manifest parser tests
+        run: |
+          chmod +x scripts/test-saver-manifest.sh
+          ./scripts/test-saver-manifest.sh
 
       - name: Build release app
         run: |
@@ -66,9 +71,29 @@ jobs:
       - name: Sign with Developer ID
         if: ${{ env.MACOS_CERTIFICATE_BASE64 != '' }}
         run: |
-          codesign --force --deep --options runtime \
+          codesign --force --options runtime \
+            --sign "$MACOS_SIGNING_IDENTITY" \
+            "dist/My Wallpaper.app/Contents/Resources/My Wallpaper.saver"
+          codesign --force --options runtime \
+            --entitlements support/MyWallpaper.entitlements \
             --sign "$MACOS_SIGNING_IDENTITY" \
             "dist/My Wallpaper.app"
+
+      - name: Notarize and staple app
+        if: ${{ env.APPLE_ID != '' && env.APPLE_TEAM_ID != '' && env.APPLE_APP_PASSWORD != '' && env.MACOS_CERTIFICATE_BASE64 != '' }}
+        run: |
+          notary_zip="$RUNNER_TEMP/My-Wallpaper-notary.zip"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "dist/My Wallpaper.app" \
+            "$notary_zip"
+          xcrun notarytool submit "$notary_zip" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --wait
+          xcrun stapler staple "dist/My Wallpaper.app"
+          xcrun stapler validate "dist/My Wallpaper.app"
+          spctl --assess --type execute --verbose=2 "dist/My Wallpaper.app"
 
       - name: Create installer DMG
         run: ./scripts/create-dmg.sh
@@ -80,10 +105,37 @@ jobs:
           test -d "dist/My Wallpaper.app/Contents/Resources/My Wallpaper.saver"
           lipo -archs "dist/My Wallpaper.app/Contents/Resources/My Wallpaper.saver/Contents/MacOS/MyWallpaperScreenSaver" | grep -Eq '(^| )arm64( |$)'
           lipo -archs "dist/My Wallpaper.app/Contents/Resources/My Wallpaper.saver/Contents/MacOS/MyWallpaperScreenSaver" | grep -Eq '(^| )x86_64( |$)'
+          source support/version.env
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' 'dist/My Wallpaper.app/Contents/Info.plist')" = "$MY_WALLPAPER_MARKETING_VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' 'dist/My Wallpaper.app/Contents/Info.plist')" = "$MY_WALLPAPER_BUILD_VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' 'dist/My Wallpaper.app/Contents/Resources/My Wallpaper.saver/Contents/Info.plist')" = "$MY_WALLPAPER_MARKETING_VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' 'dist/My Wallpaper.app/Contents/Resources/My Wallpaper.saver/Contents/Info.plist')" = "$MY_WALLPAPER_BUILD_VERSION"
+          codesign -d --entitlements - "dist/My Wallpaper.app" 2>&1 | grep -q 'com.apple.security.automation.apple-events'
           hdiutil imageinfo "dist/My-Wallpaper.dmg" >/dev/null
+          mount_dir="$RUNNER_TEMP/my-wallpaper-dmg"
+          mkdir -p "$mount_dir"
+          cleanup_mount() { hdiutil detach "$mount_dir" >/dev/null 2>&1 || true; }
+          trap cleanup_mount EXIT
+          hdiutil attach "dist/My-Wallpaper.dmg" -nobrowse -readonly -mountpoint "$mount_dir"
+          test -d "$mount_dir/My Wallpaper.app"
+          test -L "$mount_dir/Applications"
+          cleanup_mount
+          trap - EXIT
+
+      - name: Verify Developer ID identity
+        if: ${{ env.MACOS_CERTIFICATE_BASE64 != '' }}
+        run: |
+          codesign -dv --verbose=4 "dist/My Wallpaper.app" 2>&1 | grep -q 'Authority=Developer ID Application'
+          codesign -dv --verbose=4 "dist/My Wallpaper.app/Contents/Resources/My Wallpaper.saver" 2>&1 | grep -q 'Authority=Developer ID Application'
+
+      - name: Verify tagged version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          source support/version.env
+          test "$GITHUB_REF_NAME" = "v$MY_WALLPAPER_MARKETING_VERSION"
 
       - name: Notarize and staple installer
-        if: ${{ env.APPLE_ID != '' && env.MACOS_CERTIFICATE_BASE64 != '' }}
+        if: ${{ env.APPLE_ID != '' && env.APPLE_TEAM_ID != '' && env.APPLE_APP_PASSWORD != '' && env.MACOS_CERTIFICATE_BASE64 != '' }}
         run: |
           xcrun notarytool submit "dist/My-Wallpaper.dmg" \
             --apple-id "$APPLE_ID" \
@@ -91,6 +143,8 @@ jobs:
             --password "$APPLE_APP_PASSWORD" \
             --wait
           xcrun stapler staple "dist/My-Wallpaper.dmg"
+          xcrun stapler validate "dist/My-Wallpaper.dmg"
+          spctl --assess --type open --context context:primary-signature --verbose=2 "dist/My-Wallpaper.dmg"
 
       - name: Create app zip
         run: |
@@ -99,7 +153,7 @@ jobs:
             "dist/My-Wallpaper.app.zip"
 
       - name: Upload installer artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: my-wallpaper-macos
           if-no-files-found: error
@@ -117,7 +171,7 @@ jobs:
 
     steps:
       - name: Download installer artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: my-wallpaper-macos
           path: release-assets

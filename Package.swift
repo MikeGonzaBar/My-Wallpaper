@@ -11,7 +11,12 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "MyWallpaper",
-            path: "Sources/MyWallpaper"
+            path: "Sources/MyWallpaper",
+            linkerSettings: [
+                .linkedFramework("CoreServices"),
+                .linkedFramework("IOKit"),
+                .linkedFramework("Security")
+            ]
         ),
         .testTarget(
             name: "MyWallpaperTests",

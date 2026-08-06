@@ -54,17 +54,39 @@ private struct MenuBarMenu: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Button {
-            store.startConfiguredScreenSaver()
-        } label: {
-            Label("Start Screen Saver", systemImage: "play.rectangle.fill")
+        if store.isScreenSaverReady {
+            Button {
+                Task {
+                    let result = await store.startConfiguredScreenSaver()
+                    if result != .started {
+                        showScreenSaverSetup()
+                    }
+                }
+            } label: {
+                Label("Start Screen Saver", systemImage: "play.rectangle.fill")
+            }
+            .disabled(store.isStartingScreenSaver)
+        } else {
+            Button {
+                showScreenSaverSetup()
+            } label: {
+                Label("Finish Screen Saver Setup…", systemImage: "exclamationmark.triangle")
+            }
         }
+
+        Button {
+            store.previewAllDisplays()
+        } label: {
+            Label("Preview All Displays (45 Seconds)", systemImage: "rectangle.on.rectangle")
+        }
+        .help("Preview does not lock your Mac.")
 
         Button {
             store.lockMacNow()
         } label: {
             Label("Lock Mac Now", systemImage: "lock.fill")
         }
+        .help("Puts the displays to sleep; authentication follows your macOS Lock Screen policy.")
 
         Divider()
 
@@ -96,6 +118,17 @@ private struct MenuBarMenu: View {
         }
         NSApp.activate(ignoringOtherApps: true)
     }
+
+    private func showScreenSaverSetup() {
+        showMainWindow()
+        NotificationCenter.default.post(name: .showMyWallpaperScreenSaverSetup, object: nil)
+    }
+}
+
+extension Notification.Name {
+    static let showMyWallpaperScreenSaverSetup = Notification.Name(
+        "com.prototype.mywallpaper.show-screen-saver-setup"
+    )
 }
 
 private final class AppDelegate: NSObject, NSApplicationDelegate {

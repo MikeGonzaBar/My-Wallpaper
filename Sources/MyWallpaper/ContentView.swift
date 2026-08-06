@@ -4,12 +4,15 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var store: WallpaperStore
     @State private var selectedScreenID: String?
     @State private var isPickingVideo = false
     @State private var isPreviewReady = false
     @State private var hasPreviewLoadingMinimumElapsed = false
     @State private var selectedSection = SidebarSection.displays
+    @State private var pageMotionDirection = RetroVerticalMotion.up
+    @State private var displayMotionDirection = RetroHorizontalMotion.left
 
     var body: some View {
         HStack(spacing: 0) {
@@ -32,9 +35,13 @@ struct ContentView: View {
         }
         .onAppear {
             store.refreshScreens()
-            if selectedScreenID == nil {
-                selectScreen(store.availableScreens.first?.id)
-            }
+            reconcileSelectedScreen(with: store.availableScreens)
+        }
+        .onChange(of: store.availableScreens) { _, screens in
+            reconcileSelectedScreen(with: screens)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .showMyWallpaperScreenSaverSetup)) { _ in
+            selectSection(.preferences)
         }
         .alert(
             "MY WALLPAPER NEEDS ATTENTION",
@@ -72,7 +79,7 @@ struct ContentView: View {
                 title: "DISPLAYS",
                 selected: selectedSection == .displays
             ) {
-                selectedSection = .displays
+                selectSection(.displays)
             }
 
             RetroNavigationItem(
@@ -80,7 +87,7 @@ struct ContentView: View {
                 title: "PREFERENCES",
                 selected: selectedSection == .preferences
             ) {
-                selectedSection = .preferences
+                selectSection(.preferences)
             }
 
             Spacer()
@@ -102,14 +109,21 @@ struct ContentView: View {
         .background(RetroPalette.surfaceDim)
     }
 
-    @ViewBuilder
     private var mainContent: some View {
-        switch selectedSection {
-        case .displays:
-            displaysContent
-        case .preferences:
-            preferencesContent
+        ZStack(alignment: .topLeading) {
+            Group {
+                switch selectedSection {
+                case .displays:
+                    displaysContent
+                case .preferences:
+                    preferencesContent
+                }
+            }
+            .id(selectedSection)
+            .transition(reduceMotion ? .opacity : .retroVertical(pageMotionDirection))
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
     }
 
     private var displaysContent: some View {
@@ -120,32 +134,53 @@ struct ContentView: View {
                     title: "DISPLAY CONTROL",
                     subtitle: "ASSIGN A VIDEO SIGNAL TO EACH CONNECTED SCREEN."
                 ) {
-                    RetroStatusBadge(text: store.statusText, active: store.isScreenSaverInstalled)
+                    RetroStatusBadge(text: store.statusText, active: store.isScreenSaverReady)
                 }
+                .retroStaggeredEntrance(index: 0, direction: pageMotionDirection)
 
                 displayPicker
+                    .retroStaggeredEntrance(index: 1, direction: pageMotionDirection)
 
-                if let selectedScreenID {
-                    RetroWindow(title: "LIVE PREVIEW // \(store.configuration(for: selectedScreenID).screenName.uppercased())") {
-                        preview(for: selectedScreenID)
-                    }
-
-                    playlistWindow(for: selectedScreenID)
-                } else {
-                    RetroWindow(title: "NO DISPLAY SIGNAL") {
-                        VStack(spacing: 16) {
-                            Text("[ DISPLAY NOT FOUND ]")
-                                .font(RetroFont.headline(size: 20))
-                            Text("RECONNECT A DISPLAY, THEN REOPEN MY WALLPAPER.")
-                                .font(RetroFont.body(size: 11))
-                        }
-                        .frame(maxWidth: .infinity, minHeight: 280)
-                    }
+                ZStack(alignment: .topLeading) {
+                    selectedDisplayContent
+                        .id(selectedScreenID)
+                        .transition(
+                            reduceMotion ? .opacity : .retroHorizontal(displayMotionDirection)
+                        )
                 }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .clipped()
+                .retroStaggeredEntrance(index: 2, direction: pageMotionDirection)
             }
             .padding(24)
         }
         .background(RetroPalette.desktop)
+    }
+
+    @ViewBuilder
+    private var selectedDisplayContent: some View {
+        if let selectedScreenID {
+            VStack(alignment: .leading, spacing: 20) {
+                RetroWindow(title: "LIVE PREVIEW // \(store.configuration(for: selectedScreenID).screenName.uppercased())") {
+                    preview(for: selectedScreenID)
+                }
+                .retroStaggeredEntrance(index: 0, direction: displayMotionDirection)
+
+                playlistWindow(for: selectedScreenID)
+                    .retroStaggeredEntrance(index: 1, direction: displayMotionDirection)
+            }
+        } else {
+            RetroWindow(title: "NO DISPLAY SIGNAL") {
+                VStack(spacing: 16) {
+                    Text("[ DISPLAY NOT FOUND ]")
+                        .font(RetroFont.headline(size: 20))
+                    Text("CONNECT A DISPLAY. THIS LIST REFRESHES AUTOMATICALLY.")
+                        .font(RetroFont.body(size: 11))
+                }
+                .frame(maxWidth: .infinity, minHeight: 280)
+            }
+            .retroStaggeredEntrance(index: 0, direction: displayMotionDirection)
+        }
     }
 
     private var preferencesContent: some View {
@@ -157,57 +192,25 @@ struct ContentView: View {
                     subtitle: "SYSTEM INTEGRATION, PLAYBACK, AND PRIVACY CONTROLS."
                 ) {
                     RetroStatusBadge(
-                        text: store.isScreenSaverInstalled ? "SCREEN SAVER INSTALLED" : "INSTALLATION REQUIRED",
-                        active: store.isScreenSaverInstalled
+                        text: store.statusText,
+                        active: store.isScreenSaverReady
                     )
                 }
+                .retroStaggeredEntrance(index: 0, direction: pageMotionDirection)
 
-                RetroWindow(title: "SYSTEM EXTENSION") {
-                    HStack(spacing: 20) {
-                        ZStack {
-                            Rectangle()
-                                .fill(store.isScreenSaverInstalled ? RetroPalette.ink : RetroPalette.paper)
-                            Text(store.isScreenSaverInstalled ? "■" : "□")
-                                .font(RetroFont.headline(size: 24))
-                                .foregroundStyle(store.isScreenSaverInstalled ? RetroPalette.paper : RetroPalette.ink)
-                        }
-                        .frame(width: 56, height: 56)
-                        .overlay { Rectangle().stroke(RetroPalette.ink, lineWidth: 1) }
-
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("NATIVE macOS SCREEN SAVER")
-                                .font(RetroFont.headline(size: 17))
-                            Text(store.isScreenSaverInstalled
-                                 ? "INSTALLED. SELECT MY WALLPAPER IN SYSTEM SETTINGS."
-                                 : "INSTALL THE MODULE FOR AUTOMATIC IDLE ACTIVATION.")
-                                .font(RetroFont.body(size: 10))
-                                .foregroundStyle(RetroPalette.secondaryInk)
-                        }
-
-                        Spacer(minLength: 16)
-
-                        VStack(alignment: .trailing, spacing: 10) {
-                            Button(store.isScreenSaverInstalled ? "REINSTALL" : "INSTALL") {
-                                store.installScreenSaver()
-                            }
-                            .buttonStyle(RetroButtonStyle(primary: true, compact: true))
-
-                            Button("OPEN SYSTEM SETTINGS") {
-                                store.openScreenSaverSettings()
-                            }
-                            .buttonStyle(RetroButtonStyle(compact: true))
-                        }
-                    }
-                }
+                ScreenSaverSetupPanel(store: store)
+                .retroStaggeredEntrance(index: 1, direction: pageMotionDirection)
 
                 HStack(alignment: .top, spacing: 16) {
                     playbackWindow
                     privacyWindow
                 }
+                .retroStaggeredEntrance(index: 2, direction: pageMotionDirection)
 
                 Text("NOTE: SET THE PASSWORD DELAY IN SYSTEM SETTINGS → LOCK SCREEN.")
                     .font(RetroFont.label(size: 9))
                     .foregroundStyle(RetroPalette.secondaryInk)
+                    .retroStaggeredEntrance(index: 3, direction: pageMotionDirection)
             }
             .padding(24)
         }
@@ -220,6 +223,8 @@ struct ContentView: View {
                 ForEach(Array(store.availableScreens.enumerated()), id: \.element.id) { index, screen in
                     let configuration = store.configuration(for: screen.id)
                     let videoCount = store.videos(for: screen.id).count
+                    let isSelected = screen.id == selectedScreenID
+                    let usesFallback = store.usesFallbackPlayback(for: screen.id)
                     Button {
                         selectScreen(screen.id)
                     } label: {
@@ -228,35 +233,40 @@ struct ContentView: View {
                                 Text(String(format: "%02d", index + 1))
                                     .font(RetroFont.label(size: 9))
                                 Spacer()
-                                Text(screen.id == selectedScreenID ? "[ACTIVE]" : "[IDLE]")
+                                Text(isSelected ? "[ACTIVE]" : "[IDLE]")
                                     .font(RetroFont.label(size: 8))
                             }
                             Text(screen.name.uppercased())
                                 .font(RetroFont.label(size: 11))
                                 .lineLimit(1)
-                            Text(videoCount == 0
-                                 ? "NO SIGNAL"
-                                 : "\(configuration.mode.rawValue.uppercased()) / \(videoCount) FILE\(videoCount == 1 ? "" : "S")")
+                            Text(usesFallback
+                                 ? "USING FALLBACK PLAYLIST"
+                                 : videoCount == 0
+                                    ? "NO SIGNAL"
+                                    : "\(configuration.mode.rawValue.uppercased()) / \(videoCount) FILE\(videoCount == 1 ? "" : "S")")
                                 .font(RetroFont.body(size: 9))
                                 .opacity(0.72)
                         }
-                        .foregroundStyle(screen.id == selectedScreenID ? RetroPalette.paper : RetroPalette.ink)
+                        .foregroundStyle(isSelected ? RetroPalette.paper : RetroPalette.ink)
                         .padding(12)
                         .frame(width: 208, height: 76, alignment: .leading)
                         .contentShape(Rectangle())
-                        .background(screen.id == selectedScreenID ? RetroPalette.ink : RetroPalette.paper)
+                        .background(isSelected ? RetroPalette.ink : RetroPalette.paper)
                         .overlay { Rectangle().stroke(RetroPalette.ink, lineWidth: 1) }
                         .background {
                             Rectangle()
                                 .fill(RetroPalette.ink)
-                                .offset(x: 3, y: 3)
+                                .offset(x: isSelected ? 0 : 3, y: isSelected ? 0 : 3)
                         }
                         .padding(.trailing, 3)
                         .padding(.bottom, 3)
+                        .offset(x: isSelected ? 3 : 0, y: isSelected ? 3 : 0)
                     }
                     .buttonStyle(.plain)
                     .focusable(false)
                     .focusEffectDisabled()
+                    .retroHoverEffect()
+                    .animation(RetroMotion.selection, value: isSelected)
                 }
             }
             .padding(.bottom, 3)
@@ -341,7 +351,7 @@ struct ContentView: View {
                     .foregroundStyle(RetroPalette.secondaryInk)
             }
             Spacer()
-            Button("PREVIEW ALL DISPLAYS") { store.screenSaver.previewFullScreen() }
+            Button("PREVIEW ALL DISPLAYS") { store.previewAllDisplays() }
                 .buttonStyle(RetroButtonStyle(primary: true, compact: true))
         }
         .padding(12)
@@ -450,14 +460,47 @@ struct ContentView: View {
     }
 
     private func selectScreen(_ screenID: String?) {
+        guard screenID != selectedScreenID else { return }
+
+        let currentIndex = store.availableScreens.firstIndex { $0.id == selectedScreenID }
+        let newIndex = store.availableScreens.firstIndex { $0.id == screenID }
+        if let currentIndex, let newIndex {
+            displayMotionDirection = .direction(from: currentIndex, to: newIndex)
+        }
+
+        let shouldAnimate = selectedScreenID != nil && screenID != nil
+        if shouldAnimate && !reduceMotion {
+            withAnimation(RetroMotion.panel) {
+                applyScreenSelection(screenID)
+            }
+        } else {
+            applyScreenSelection(screenID)
+        }
+    }
+
+    private func applyScreenSelection(_ screenID: String?) {
         isPreviewReady = false
         hasPreviewLoadingMinimumElapsed = false
         selectedScreenID = screenID
         store.selectScreen(screenID)
     }
+
+    private func reconcileSelectedScreen(with screens: [DisplayInfo]) {
+        guard !screens.contains(where: { $0.id == selectedScreenID }) else { return }
+        selectScreen(screens.first?.id)
+    }
+
+    private func selectSection(_ section: SidebarSection) {
+        guard section != selectedSection else { return }
+
+        pageMotionDirection = section.rawValue > selectedSection.rawValue ? .up : .down
+        withAnimation(reduceMotion ? .linear(duration: 0.01) : RetroMotion.panel) {
+            selectedSection = section
+        }
+    }
 }
 
-private enum SidebarSection {
+private enum SidebarSection: Int {
     case displays
     case preferences
 }
@@ -591,6 +634,7 @@ private struct PlaylistRow: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .retroHoverEffect()
 
             if allowsReordering {
                 RetroRowButton(title: "↑", disabled: !canMoveUp, action: moveUp)
@@ -622,5 +666,6 @@ private struct RetroRowButton: View {
         .buttonStyle(.plain)
         .disabled(disabled)
         .opacity(disabled ? 0.45 : 1)
+        .retroHoverEffect()
     }
 }

@@ -23,6 +23,138 @@ enum RetroFont {
     }
 }
 
+enum RetroMotion {
+    static let hover = Animation.easeOut(duration: 0.08)
+    static let selection = Animation.easeOut(duration: 0.12)
+    static let panel = Animation.easeInOut(duration: 0.46)
+    static let panelRow = Animation.easeOut(duration: 0.34)
+    static let panelRowDelay = 0.09
+}
+
+enum RetroVerticalMotion {
+    case up
+    case down
+
+    var insertionEdge: Edge {
+        self == .up ? .bottom : .top
+    }
+
+    var removalEdge: Edge {
+        self == .up ? .top : .bottom
+    }
+
+    var rowOffset: CGSize {
+        CGSize(width: 0, height: self == .up ? 72 : -72)
+    }
+}
+
+enum RetroHorizontalMotion {
+    case left
+    case right
+
+    static func direction(from currentIndex: Int, to newIndex: Int) -> Self {
+        newIndex > currentIndex ? .left : .right
+    }
+
+    var insertionEdge: Edge {
+        self == .left ? .trailing : .leading
+    }
+
+    var removalEdge: Edge {
+        self == .left ? .leading : .trailing
+    }
+
+    var rowOffset: CGSize {
+        CGSize(width: self == .left ? 72 : -72, height: 0)
+    }
+}
+
+private struct RetroStaggeredEntrance: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isVisible = false
+
+    let index: Int
+    let offset: CGSize
+    let animation: Animation
+    let delay: Double
+
+    func body(content: Content) -> some View {
+        content
+            .offset(reduceMotion || isVisible ? .zero : offset)
+            .opacity(reduceMotion || isVisible ? 1 : 0)
+            .onAppear {
+                guard !reduceMotion else {
+                    isVisible = true
+                    return
+                }
+
+                withAnimation(animation.delay(Double(index) * delay)) {
+                    isVisible = true
+                }
+            }
+    }
+}
+
+private struct RetroHoverEffect: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var isHovering = false
+
+    private var shouldLift: Bool {
+        isEnabled && isHovering && !reduceMotion
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .offset(y: shouldLift ? -1 : 0)
+            .animation(reduceMotion ? nil : RetroMotion.hover, value: shouldLift)
+            .onHover { hovering in
+                isHovering = hovering
+            }
+    }
+}
+
+extension AnyTransition {
+    static func retroVertical(_ direction: RetroVerticalMotion) -> AnyTransition {
+        .asymmetric(
+            insertion: .move(edge: direction.insertionEdge),
+            removal: .move(edge: direction.removalEdge)
+        )
+    }
+
+    static func retroHorizontal(_ direction: RetroHorizontalMotion) -> AnyTransition {
+        .asymmetric(
+            insertion: .move(edge: direction.insertionEdge),
+            removal: .move(edge: direction.removalEdge)
+        )
+    }
+
+}
+
+extension View {
+    func retroStaggeredEntrance(index: Int, direction: RetroVerticalMotion) -> some View {
+        modifier(RetroStaggeredEntrance(
+            index: index,
+            offset: direction.rowOffset,
+            animation: RetroMotion.panelRow,
+            delay: RetroMotion.panelRowDelay
+        ))
+    }
+
+    func retroStaggeredEntrance(index: Int, direction: RetroHorizontalMotion) -> some View {
+        modifier(RetroStaggeredEntrance(
+            index: index,
+            offset: direction.rowOffset,
+            animation: RetroMotion.panelRow,
+            delay: RetroMotion.panelRowDelay
+        ))
+    }
+
+    func retroHoverEffect() -> some View {
+        modifier(RetroHoverEffect())
+    }
+}
+
 struct RetroNavigationItem: View {
     let marker: String
     let title: String
@@ -51,7 +183,10 @@ struct RetroNavigationItem: View {
         .buttonStyle(.plain)
         .focusable(false)
         .focusEffectDisabled()
+        .retroHoverEffect()
+        .padding(.leading, selected ? 6 : 0)
         .padding(.bottom, 8)
+        .animation(RetroMotion.selection, value: selected)
     }
 }
 
@@ -217,6 +352,7 @@ struct RetroChoiceBar<Value: Hashable>: View {
                 .buttonStyle(.plain)
                 .focusable(false)
                 .focusEffectDisabled()
+                .retroHoverEffect()
             }
         }
     }
@@ -247,6 +383,7 @@ struct RetroCheckbox: View {
         .buttonStyle(.plain)
         .focusable(false)
         .focusEffectDisabled()
+        .retroHoverEffect()
     }
 }
 
@@ -283,5 +420,6 @@ struct RetroButtonStyle: ButtonStyle {
             .offset(x: configuration.isPressed ? 2 : 0, y: configuration.isPressed ? 2 : 0)
             .padding(.trailing, 2)
             .padding(.bottom, 2)
+            .retroHoverEffect()
     }
 }

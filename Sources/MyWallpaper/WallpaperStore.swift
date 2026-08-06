@@ -10,13 +10,18 @@ final class WallpaperStore: ObservableObject {
     @Published private(set) var previewPlayer: AVPlayer?
     @Published private(set) var errorMessage: String?
     @Published private(set) var isImporting = false
-    @Published private(set) var isScreenSaverInstalled = false
+    @Published private(set) var screenSaverIntegrationState = ScreenSaverIntegrationState.verificationRequired
+    @Published private(set) var isStartingScreenSaver = false
 
-    let screenSaver = ScreenSaverController()
+    private let nativeScreenSaver = NativeScreenSaverController()
+    private let previewController = FullScreenPreviewController()
 
     private var previewLooper: AVPlayerLooper?
     private var previewScreenID: String?
+    private var displayChangeCancellable: AnyCancellable?
+    private var applicationActiveCancellable: AnyCancellable?
     private let defaultsKey = "wallpaperSettings"
+    private let verificationAttemptedKey = "screenSaverVerificationAttempted"
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
@@ -44,26 +49,55 @@ final class WallpaperStore: ObservableObject {
 
         refreshScreens()
         migrateLegacyVideoToScreensIfNeeded()
-        refreshScreenSaverInstallationStatus()
         persistSharedSettings()
         applySettings()
+        observeDisplayChanges()
+        observeApplicationActivation()
+        previewController.onError = { [weak self] message in
+            self?.errorMessage = message
+        }
+        Task { await refreshScreenSaverIntegrationState() }
     }
 
     var statusText: String {
-        let configuredCount = playbackPlans().count
+        let configuredCount = allPlaybackPlans().count
         guard configuredCount > 0 else { return "Configure a display to get started" }
-        return isScreenSaverInstalled ? "Installed for \(configuredCount) display\(configuredCount == 1 ? "" : "s")" : "Installation required"
+        switch screenSaverIntegrationState {
+        case .ready:
+            return "Ready for \(configuredCount) display\(configuredCount == 1 ? "" : "s")"
+        case .updateRequired:
+            return "Screen saver update required"
+        case .notInstalled:
+            return "Screen saver installation required"
+        case .verificationRequired:
+            return "System setup verification required"
+        case .verificationDenied:
+            return "Automation permission required"
+        case let .notSelected(currentName):
+            return currentName.map { "\($0) is selected" } ?? "My Wallpaper is not selected"
+        case .moduleUnavailable:
+            return "Screen saver integration unavailable"
+        }
     }
 
+    var isScreenSaverReady: Bool { screenSaverIntegrationState.isReady }
+
     func refreshScreens() {
-        availableScreens = NSScreen.screens.map {
+        let connectedScreens = NSScreen.screens.map {
             DisplayInfo(id: DisplayIdentifier.stableID(for: $0), name: $0.localizedName)
         }
+        availableScreens = connectedScreens
         for screen in availableScreens {
             if let index = settings.screens.firstIndex(where: { $0.screenID == screen.id }) {
                 settings.screens[index].screenName = screen.name
             }
         }
+        if let previewScreenID,
+           !connectedScreens.contains(where: { $0.id == previewScreenID }) {
+            self.previewScreenID = connectedScreens.first?.id
+            refreshPreview()
+        }
+        persistSharedSettings()
         applySettings()
     }
 
@@ -78,6 +112,13 @@ final class WallpaperStore: ObservableObject {
     func videos(for screenID: String) -> [ManagedVideo] {
         let ids = configuration(for: screenID).videoIDs
         return ids.compactMap { id in settings.videos.first(where: { $0.id == id }) }
+    }
+
+    func usesFallbackPlayback(for screenID: String) -> Bool {
+        let hasPlayableAssignment = videos(for: screenID).contains {
+            FileManager.default.isReadableFile(atPath: $0.path)
+        }
+        return !hasPlayableAssignment && !allPlaybackPlans().isEmpty
     }
 
     func selectScreen(_ screenID: String?) {
@@ -191,25 +232,29 @@ final class WallpaperStore: ObservableObject {
         errorMessage = nil
     }
 
-    func installScreenSaver() {
+    func installOrUpdateScreenSaver() {
         errorMessage = nil
         do {
-            guard let bundledSaver = Bundle.main.url(
-                forResource: "My Wallpaper",
-                withExtension: "saver"
-            ) else {
-                throw ScreenSaverInstallationError.missingBundledSaver
-            }
-            let destination = try installedScreenSaverURL(createDirectory: true)
-            if FileManager.default.fileExists(atPath: destination.path) {
-                try FileManager.default.removeItem(at: destination)
-            }
-            try FileManager.default.copyItem(at: bundledSaver, to: destination)
-            isScreenSaverInstalled = true
+            try nativeScreenSaver.installOrUpdate()
+            Task { await refreshScreenSaverIntegrationState() }
         } catch {
             errorMessage = "The screen saver couldn’t be installed: \(error.localizedDescription)"
-            refreshScreenSaverInstallationStatus()
+            Task { await refreshScreenSaverIntegrationState() }
         }
+    }
+
+    func verifySystemScreenSaverSetup(requestConsent: Bool) async {
+        if requestConsent {
+            UserDefaults.standard.set(true, forKey: verificationAttemptedKey)
+        }
+        screenSaverIntegrationState = await nativeScreenSaver.integrationState(
+            verificationAttempted: UserDefaults.standard.bool(forKey: verificationAttemptedKey),
+            requestConsent: requestConsent
+        )
+    }
+
+    func refreshScreenSaverIntegrationState() async {
+        await verifySystemScreenSaverSetup(requestConsent: false)
     }
 
     func openScreenSaverSettings() {
@@ -218,33 +263,89 @@ final class WallpaperStore: ObservableObject {
         } else {
             "x-apple.systempreferences:com.apple.preference.desktopscreeneffect"
         }
-        guard let url = URL(string: destination) else { return }
+        guard let url = URL(string: destination) else {
+            openSystemSettingsFallback()
+            return
+        }
 
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = true
         configuration.addsToRecentItems = false
         configuration.promptsUserIfNeeded = true
-        NSWorkspace.shared.open(url, configuration: configuration) { application, _ in
-            application?.activate(options: [.activateAllWindows])
+        NSWorkspace.shared.open(url, configuration: configuration) { [weak self] application, error in
+            if error == nil, let application {
+                application.activate(options: [.activateAllWindows])
+            } else {
+                Task { @MainActor [weak self] in self?.openSystemSettingsFallback() }
+            }
         }
     }
 
-    func startConfiguredScreenSaver() {
+    func openAutomationSettings() {
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation"
+        ) else { return }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        configuration.addsToRecentItems = false
+        configuration.promptsUserIfNeeded = true
+        NSWorkspace.shared.open(url, configuration: configuration) { application, error in
+            if let error {
+                Task { @MainActor [weak self] in
+                    self?.errorMessage = "Automation settings could not be opened: \(error.localizedDescription)"
+                }
+            } else {
+                application?.activate(options: [.activateAllWindows])
+            }
+        }
+    }
+
+    func startConfiguredScreenSaver() async -> NativeStartResult {
+        guard !isStartingScreenSaver else {
+            return .launchFailed(message: "The screen saver is already starting.")
+        }
         errorMessage = nil
-        guard !playbackPlans().isEmpty else {
-            errorMessage = "Choose at least one video before starting the screen saver."
-            return
+        guard persistSharedSettings() else {
+            let message = "Your screen saver settings could not be prepared."
+            errorMessage = message
+            return .invalidConfiguration(message: message)
         }
-        screenSaver.startScreenSaver { [weak self] in
-            self?.lockMacNow()
+        guard ScreenSaverManifestBuilder.build(
+            settings: settings,
+            connectedDisplayIDs: availableScreens.map(\.id)
+        ) != nil else {
+            let message = "Choose at least one readable video before starting the screen saver."
+            errorMessage = message
+            return .invalidConfiguration(message: message)
         }
+
+        await refreshScreenSaverIntegrationState()
+        guard screenSaverIntegrationState == .ready else {
+            return .requiresSetup(screenSaverIntegrationState)
+        }
+
+        isStartingScreenSaver = true
+        defer { isStartingScreenSaver = false }
+        do {
+            try await nativeScreenSaver.startNativeScreenSaver()
+            return .started
+        } catch {
+            let message = "The native screen saver could not start: \(error.localizedDescription)"
+            errorMessage = message
+            return .launchFailed(message: message)
+        }
+    }
+
+    func previewAllDisplays() {
+        errorMessage = nil
+        previewController.previewAllDisplays()
     }
 
     func lockMacNow() {
         errorMessage = nil
         let powerManager = URL(fileURLWithPath: "/usr/bin/pmset")
         guard FileManager.default.isExecutableFile(atPath: powerManager.path) else {
-            errorMessage = "The macOS display-lock command couldn’t be found."
+            errorMessage = "The macOS display-sleep command couldn’t be found."
             return
         }
 
@@ -254,7 +355,7 @@ final class WallpaperStore: ObservableObject {
         do {
             try process.run()
         } catch {
-            errorMessage = "The Mac couldn’t be locked: \(error.localizedDescription)"
+            errorMessage = "The display couldn’t be put to sleep: \(error.localizedDescription)"
         }
     }
 
@@ -268,6 +369,27 @@ final class WallpaperStore: ObservableObject {
             var configuration = configuration(for: screenID)
             mutation(&configuration)
             settings.screens.append(configuration)
+        }
+    }
+
+    private func openSystemSettingsFallback() {
+        let workspace = NSWorkspace.shared
+        guard let url = workspace.urlForApplication(withBundleIdentifier: "com.apple.systempreferences") else {
+            errorMessage = "Open System Settings, then choose Wallpaper → Screen Saver → Other → My Wallpaper."
+            return
+        }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        configuration.addsToRecentItems = false
+        configuration.promptsUserIfNeeded = true
+        workspace.openApplication(at: url, configuration: configuration) { [weak self] application, error in
+            if let error {
+                Task { @MainActor [weak self] in
+                    self?.errorMessage = "System Settings could not be opened: \(error.localizedDescription)"
+                }
+            } else {
+                application?.activate(options: [.activateAllWindows])
+            }
         }
     }
 
@@ -326,13 +448,11 @@ final class WallpaperStore: ObservableObject {
         return settings.videos.first { $0.id == videoID }
     }
 
-    private func playbackPlans() -> [ScreenPlaybackPlan] {
-        let connectedScreenIDs = Set(availableScreens.map(\.id))
+    private func allPlaybackPlans() -> [ScreenPlaybackPlan] {
         return settings.screens.compactMap { configuration in
-            guard connectedScreenIDs.contains(configuration.screenID) else { return nil }
             let playableVideos = configuration.videoIDs.compactMap { id -> ManagedVideo? in
                 guard let video = settings.videos.first(where: { $0.id == id }),
-                      FileManager.default.fileExists(atPath: video.path) else { return nil }
+                      FileManager.default.isReadableFile(atPath: video.path) else { return nil }
                 return video
             }
             guard !playableVideos.isEmpty else { return nil }
@@ -342,7 +462,7 @@ final class WallpaperStore: ObservableObject {
             return ScreenPlaybackPlan(
                 screenID: configuration.screenID,
                 videoURLs: configuration.mode == .single
-                    ? [playableVideos[0].url]
+                    ? [playableVideos[startIndex].url]
                     : playableVideos.map(\.url),
                 startIndex: configuration.mode == .single ? 0 : startIndex
             )
@@ -353,10 +473,9 @@ final class WallpaperStore: ObservableObject {
         do {
             let data = try encoder.encode(settings)
             UserDefaults.standard.set(data, forKey: defaultsKey)
-            try data.write(
-                to: applicationSupportDirectory().appendingPathComponent("settings.json"),
-                options: .atomic
-            )
+            guard persistSharedSettings() else {
+                throw WallpaperPersistenceError.sharedSettingsWriteFailed
+            }
         } catch {
             errorMessage = "Your screensaver settings couldn’t be saved: \(error.localizedDescription)"
         }
@@ -364,40 +483,65 @@ final class WallpaperStore: ObservableObject {
     }
 
     private func applySettings() {
-        let plans = playbackPlans()
-        screenSaver.configure(
+        let plans = allPlaybackPlans()
+        let connectedIDs = Set(availableScreens.map(\.id))
+        let fallback = plans.first { connectedIDs.contains($0.screenID) } ?? plans.first
+        previewController.configure(
             plans: plans,
+            fallbackPlan: fallback,
             isMuted: settings.isMuted,
             scaling: settings.scaling
         )
     }
 
-    private func persistSharedSettings() {
-        guard let data = try? encoder.encode(settings),
-              let directory = try? applicationSupportDirectory() else { return }
-        try? data.write(to: directory.appendingPathComponent("settings.json"), options: .atomic)
+    @discardableResult
+    private func persistSharedSettings() -> Bool {
+        do {
+            let directory = try applicationSupportDirectory()
+            let legacyData = try encoder.encode(settings)
+            try legacyData.write(
+                to: directory.appendingPathComponent("settings.json"),
+                options: .atomic
+            )
+
+            let manifestURL = directory.appendingPathComponent("screensaver-manifest-v1.json")
+            if let manifest = ScreenSaverManifestBuilder.build(
+                settings: settings,
+                connectedDisplayIDs: availableScreens.map(\.id)
+            ) {
+                try encoder.encode(manifest).write(to: manifestURL, options: .atomic)
+            } else if FileManager.default.fileExists(atPath: manifestURL.path) {
+                try FileManager.default.removeItem(at: manifestURL)
+            }
+            return true
+        } catch {
+            errorMessage = "Your screen saver settings couldn’t be saved: \(error.localizedDescription)"
+            return false
+        }
     }
 
-    private func installedScreenSaverURL(createDirectory: Bool) throws -> URL {
-        let library = try FileManager.default.url(
-            for: .libraryDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: createDirectory
+    private func observeDisplayChanges() {
+        displayChangeCancellable = NotificationCenter.default.publisher(
+            for: NSApplication.didChangeScreenParametersNotification
         )
-        let screenSavers = library.appendingPathComponent("Screen Savers", isDirectory: true)
-        if createDirectory {
-            try FileManager.default.createDirectory(at: screenSavers, withIntermediateDirectories: true)
+        .receive(on: RunLoop.main)
+        .sink { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.refreshScreens()
+            }
         }
-        return screenSavers.appendingPathComponent("My Wallpaper.saver", isDirectory: true)
     }
 
-    private func refreshScreenSaverInstallationStatus() {
-        guard let url = try? installedScreenSaverURL(createDirectory: false) else {
-            isScreenSaverInstalled = false
-            return
+    private func observeApplicationActivation() {
+        applicationActiveCancellable = NotificationCenter.default.publisher(
+            for: NSApplication.didBecomeActiveNotification
+        )
+        .receive(on: RunLoop.main)
+        .sink { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.refreshScreenSaverIntegrationState()
+            }
         }
-        isScreenSaverInstalled = FileManager.default.fileExists(atPath: url.path)
     }
 
     private func migrateLegacyVideoToScreensIfNeeded() {
@@ -425,10 +569,10 @@ private struct LegacyWallpaperSettings: Codable {
     let scaling: VideoScaling
 }
 
-private enum ScreenSaverInstallationError: LocalizedError {
-    case missingBundledSaver
+private enum WallpaperPersistenceError: LocalizedError {
+    case sharedSettingsWriteFailed
 
     var errorDescription: String? {
-        "The My Wallpaper screen saver isn’t included in this app build."
+        "The native screen saver manifest could not be written."
     }
 }
