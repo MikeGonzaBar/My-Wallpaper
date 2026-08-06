@@ -63,10 +63,11 @@ enum SystemScreenSaverSelectionMatcher {
     }
 }
 
-enum SystemScreenSaverServiceError: LocalizedError {
+enum SystemScreenSaverServiceError: LocalizedError, Equatable {
     case automationNotDetermined
     case automationDenied
     case systemEventsUnavailable
+    case selectionTemporarilyUnavailable
     case scriptFailed
 
     var errorDescription: String? {
@@ -77,6 +78,8 @@ enum SystemScreenSaverServiceError: LocalizedError {
             "Allow My Wallpaper to control System Events in Privacy & Security → Automation."
         case .systemEventsUnavailable:
             "macOS System Events could not be opened."
+        case .selectionTemporarilyUnavailable:
+            "macOS is still refreshing the selected screen saver."
         case .scriptFailed:
             "macOS could not report the selected screen saver."
         }
@@ -177,12 +180,15 @@ final class SystemScreenSaverService: SystemScreenSaverSelecting {
         }.value
     }
 
-    private static func mapScriptError(_ error: NSDictionary?) -> Error {
+    static func mapScriptError(_ error: NSDictionary?) -> SystemScreenSaverServiceError {
         let number = error?[NSAppleScript.errorNumber] as? NSNumber
         if number?.intValue == Int(errAEEventNotPermitted) {
-            return SystemScreenSaverServiceError.automationDenied
+            return .automationDenied
         }
-        return SystemScreenSaverServiceError.scriptFailed
+        if number?.intValue == Int(errAENoSuchObject) {
+            return .selectionTemporarilyUnavailable
+        }
+        return .scriptFailed
     }
 
 }

@@ -58,6 +58,8 @@ struct ScreenSaverSetupPanel: View {
             "MODULE NOT INSTALLED"
         case .updateRequired:
             "UPDATE REQUIRED"
+        case .finalizingUpdate:
+            "FINALIZING UPDATE…"
         case .verificationRequired:
             "VERIFY SYSTEM SETUP"
         case .verificationDenied:
@@ -77,6 +79,8 @@ struct ScreenSaverSetupPanel: View {
             "Install the native module for manual and automatic screen saver activation."
         case .updateRequired:
             "The installed module is older or different from the one in this app."
+        case .finalizingUpdate:
+            "macOS is refreshing the installed screen saver. This normally takes only a moment."
         case .verificationRequired:
             "Allow a one-time macOS Automation check so the app never starts the wrong saver."
         case .verificationDenied:
@@ -99,6 +103,9 @@ struct ScreenSaverSetupPanel: View {
             case .updateRequired:
                 Button("UPDATE") { store.installOrUpdateScreenSaver() }
                     .buttonStyle(RetroButtonStyle(primary: true, compact: true))
+            case .finalizingUpdate:
+                ProgressView()
+                    .controlSize(.small)
             case .verificationRequired:
                 Button("VERIFY SYSTEM SETUP") {
                     Task { await store.verifySystemScreenSaverSetup(requestConsent: true) }

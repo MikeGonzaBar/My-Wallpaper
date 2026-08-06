@@ -53,6 +53,7 @@ final class SystemScreenSaverSelectionMatcherTests: XCTestCase {
     func testOnlyReadyIntegrationStateIsReady() {
         XCTAssertTrue(ScreenSaverIntegrationState.ready.isReady)
         XCTAssertFalse(ScreenSaverIntegrationState.updateRequired.isReady)
+        XCTAssertFalse(ScreenSaverIntegrationState.finalizingUpdate.isReady)
         XCTAssertFalse(ScreenSaverIntegrationState.verificationDenied.isReady)
     }
 
@@ -113,6 +114,17 @@ final class SystemScreenSaverSelectionMatcherTests: XCTestCase {
         XCTAssertNil(SystemScreenSaverSelectionParser.parse(descriptor))
     }
 
+    func testMapsMissingScreenSaverObjectAsTransient() {
+        let error: NSDictionary = [
+            NSAppleScript.errorNumber: NSNumber(value: -1728)
+        ]
+
+        XCTAssertEqual(
+            SystemScreenSaverService.mapScriptError(error),
+            .selectionTemporarilyUnavailable
+        )
+    }
+
     func testIntegrationStateStopsAtModuleReadiness() async {
         let service = StubSystemScreenSaverService(result: .failure(.automationDenied))
 
@@ -167,6 +179,56 @@ final class SystemScreenSaverSelectionMatcherTests: XCTestCase {
             state,
             .moduleUnavailable(message: SystemScreenSaverServiceError.systemEventsUnavailable.localizedDescription)
         )
+    }
+
+    func testPostUpdateVerificationRetriesTransientSelectionFailure() async {
+        let service = SequencedSystemScreenSaverService(results: [
+            .failure(.selectionTemporarilyUnavailable),
+            .failure(.selectionTemporarilyUnavailable),
+            .success(selectedMyWallpaper)
+        ])
+        let controller = NativeScreenSaverController(
+            moduleManager: StubScreenSaverModuleManager(
+                state: .current(installedURL),
+                bundleIdentifier: expectedBundleID
+            ),
+            systemService: service,
+            transientRetryDelays: [.zero, .zero]
+        )
+
+        let state = await controller.integrationState(
+            verificationAttempted: true,
+            retryTransientSelection: true
+        )
+
+        XCTAssertEqual(state, .ready)
+        XCTAssertEqual(service.requestConsentValues, [false, false, false])
+    }
+
+    func testOrdinaryVerificationDoesNotRetryTransientSelectionFailure() async {
+        let service = SequencedSystemScreenSaverService(results: [
+            .failure(.selectionTemporarilyUnavailable),
+            .success(selectedMyWallpaper)
+        ])
+        let controller = NativeScreenSaverController(
+            moduleManager: StubScreenSaverModuleManager(
+                state: .current(installedURL),
+                bundleIdentifier: expectedBundleID
+            ),
+            systemService: service,
+            transientRetryDelays: [.zero]
+        )
+
+        let state = await controller.integrationState(verificationAttempted: true)
+
+        XCTAssertEqual(
+            state,
+            .moduleUnavailable(
+                message: SystemScreenSaverServiceError.selectionTemporarilyUnavailable
+                    .localizedDescription
+            )
+        )
+        XCTAssertEqual(service.requestConsentValues, [false])
     }
 
     func testIntegrationStateRequestsConsentOnlyWhenDirected() async {
@@ -338,6 +400,21 @@ private final class StubSystemScreenSaverService: SystemScreenSaverSelecting {
     func selection(requestConsent: Bool) async throws -> SystemScreenSaverSelection {
         requestConsentValues.append(requestConsent)
         return try result.get()
+    }
+}
+
+private final class SequencedSystemScreenSaverService: SystemScreenSaverSelecting {
+    private var results: [Result<SystemScreenSaverSelection, SystemScreenSaverServiceError>]
+    private(set) var requestConsentValues: [Bool] = []
+
+    init(results: [Result<SystemScreenSaverSelection, SystemScreenSaverServiceError>]) {
+        self.results = results
+    }
+
+    func selection(requestConsent: Bool) async throws -> SystemScreenSaverSelection {
+        requestConsentValues.append(requestConsent)
+        guard !results.isEmpty else { throw SystemScreenSaverServiceError.scriptFailed }
+        return try results.removeFirst().get()
     }
 }
 

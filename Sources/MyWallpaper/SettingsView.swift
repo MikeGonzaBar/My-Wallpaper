@@ -13,7 +13,21 @@ struct SettingsView: View {
                 EmptyView()
             }
 
+            RetroWindow(title: "APPEARANCE") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("CHOOSE HOW MY WALLPAPER MATCHES YOUR MAC.")
+                        .font(RetroFont.body(size: 9))
+                        .foregroundStyle(RetroPalette.secondaryInk)
+                    AppearanceModePicker(
+                        mode: store.appearanceMode,
+                        onSelect: store.setAppearanceMode
+                    )
+                }
+            }
+
             ScreenSaverSetupPanel(store: store)
+
+            PerformanceModePanel(store: store)
 
             RetroWindow(title: "PLAYBACK") {
                 RetroCheckbox(

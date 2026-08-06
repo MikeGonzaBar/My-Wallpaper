@@ -15,7 +15,8 @@ let package = Package(
             linkerSettings: [
                 .linkedFramework("CoreServices"),
                 .linkedFramework("IOKit"),
-                .linkedFramework("Security")
+                .linkedFramework("Security"),
+                .linkedFramework("VideoToolbox")
             ]
         ),
         .testTarget(

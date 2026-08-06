@@ -1,12 +1,31 @@
+import AppKit
 import SwiftUI
 
 enum RetroPalette {
-    static let paper = Color.white
-    static let desktop = Color(red: 249 / 255, green: 249 / 255, blue: 249 / 255)
-    static let surfaceDim = Color(red: 232 / 255, green: 232 / 255, blue: 232 / 255)
-    static let surfaceHighest = Color(red: 226 / 255, green: 226 / 255, blue: 226 / 255)
-    static let ink = Color.black
-    static let secondaryInk = Color(red: 76 / 255, green: 69 / 255, blue: 70 / 255)
+    static let paper = adaptive(light: .white, dark: NSColor(calibratedWhite: 0.10, alpha: 1))
+    static let desktop = adaptive(
+        light: NSColor(calibratedWhite: 249 / 255, alpha: 1),
+        dark: NSColor(calibratedWhite: 0.06, alpha: 1)
+    )
+    static let surfaceDim = adaptive(
+        light: NSColor(calibratedWhite: 232 / 255, alpha: 1),
+        dark: NSColor(calibratedWhite: 0.14, alpha: 1)
+    )
+    static let surfaceHighest = adaptive(
+        light: NSColor(calibratedWhite: 226 / 255, alpha: 1),
+        dark: NSColor(calibratedWhite: 0.20, alpha: 1)
+    )
+    static let ink = adaptive(light: .black, dark: NSColor(calibratedWhite: 0.94, alpha: 1))
+    static let secondaryInk = adaptive(
+        light: NSColor(red: 76 / 255, green: 69 / 255, blue: 70 / 255, alpha: 1),
+        dark: NSColor(calibratedWhite: 0.69, alpha: 1)
+    )
+
+    private static func adaptive(light: NSColor, dark: NSColor) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+        })
+    }
 }
 
 enum RetroFont {
@@ -354,6 +373,68 @@ struct RetroChoiceBar<Value: Hashable>: View {
                 .focusEffectDisabled()
                 .retroHoverEffect()
             }
+        }
+    }
+}
+
+struct AppearanceModePicker: View {
+    let mode: AppearanceMode
+    let onSelect: (AppearanceMode) -> Void
+
+    var body: some View {
+        RetroChoiceBar(
+            values: AppearanceMode.allCases,
+            selected: mode,
+            title: \.title,
+            onSelect: onSelect
+        )
+        .accessibilityLabel("Appearance")
+    }
+}
+
+struct DiagonalAppearanceTransition: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let trigger: UUID
+
+    @State private var progress = 0.0
+    @State private var isVisible = false
+    @State private var animationToken = UUID()
+
+    var body: some View {
+        GeometryReader { proxy in
+            if isVisible {
+                Canvas { context, size in
+                    let diagonal = hypot(size.width, size.height)
+                    context.translateBy(x: size.width / 2, y: size.height / 2)
+                    context.rotate(by: .degrees(45))
+                    let leadingEdge = -diagonal * 2 + progress * diagonal * 4
+                    context.fill(
+                        Path(CGRect(x: leadingEdge, y: -diagonal * 2, width: diagonal * 2, height: diagonal * 4)),
+                        with: .color(RetroPalette.desktop)
+                    )
+                }
+                .frame(width: proxy.size.width, height: proxy.size.height)
+                .allowsHitTesting(false)
+            }
+        }
+        .accessibilityHidden(true)
+        .onChange(of: trigger) { _, _ in
+            playTransition()
+        }
+    }
+
+    private func playTransition() {
+        guard !reduceMotion else { return }
+        let token = UUID()
+        animationToken = token
+        progress = 0
+        isVisible = true
+        withAnimation(.easeInOut(duration: 0.48)) {
+            progress = 1
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            guard animationToken == token else { return }
+            isVisible = false
         }
     }
 }

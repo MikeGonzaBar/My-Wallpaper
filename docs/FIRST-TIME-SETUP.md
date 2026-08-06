@@ -81,6 +81,10 @@ open "dist/My Wallpaper.app"
 3. Add MOV, MP4, or M4V video files.
 4. Click **Preview all displays** to make sure the playback and sizing look right. Preview ends automatically after 45 seconds and does not lock your Mac.
 
+In **Preferences**, choose **Automatic** (the default) to follow your Mac's Light or Dark appearance, or select a fixed **Light** or **Dark** mode. The app transitions between modes diagonally from the upper-left to the lower-right.
+
+If high-resolution or high-frame-rate videos stutter, enable **Performance Mode** in Preferences. The recommended **1440p / 60 FPS** option creates local HEVC playback copies while preserving the imported originals. Conversion progress and storage use appear in the same panel; originals remain active until each copy is ready.
+
 Imported videos are copied to `~/Library/Application Support/My Wallpaper/Videos`, so do not delete that folder while using the app.
 
 ## Optional: enable the native screen saver

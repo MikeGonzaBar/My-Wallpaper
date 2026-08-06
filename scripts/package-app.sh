@@ -33,6 +33,7 @@ swiftc \
     -framework CoreServices \
     -framework IOKit \
     -framework Security \
+    -framework VideoToolbox \
     -o "$binary_dir/MyWallpaper" \
     "$repo_dir"/Sources/MyWallpaper/*.swift
 

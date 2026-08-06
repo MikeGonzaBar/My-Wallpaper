@@ -10,7 +10,8 @@ struct MyWallpaperApp: App {
         WindowGroup("My Wallpaper", id: "main") {
             ContentView(store: store)
                 .frame(minWidth: 1_040, minHeight: 680)
-                .preferredColorScheme(.light)
+                .preferredColorScheme(store.appearanceMode.colorScheme)
+                .overlay { DiagonalAppearanceTransition(trigger: store.appearanceTransitionID) }
         }
         .windowStyle(.hiddenTitleBar)
         .commands {
@@ -27,7 +28,8 @@ struct MyWallpaperApp: App {
         Settings {
             SettingsView(store: store)
                 .frame(width: 520)
-                .preferredColorScheme(.light)
+                .preferredColorScheme(store.appearanceMode.colorScheme)
+                .overlay { DiagonalAppearanceTransition(trigger: store.appearanceTransitionID) }
         }
     }
 }

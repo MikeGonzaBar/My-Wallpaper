@@ -35,24 +35,30 @@ enum ScreenSaverManifestBuilder {
         var videosByID: [String: ManagedVideo] = [:]
         settings.videos.forEach { videosByID[$0.id] = $0 }
         let displays = settings.screens.compactMap { configuration -> ScreenSaverDisplayManifest? in
-            let playable = configuration.videoIDs.compactMap { videoID -> ManagedVideo? in
-                guard let video = videosByID[videoID], isReadableFile(video.path) else { return nil }
-                return video
+            let playable = configuration.videoIDs.compactMap { videoID -> (ManagedVideo, String)? in
+                guard let video = videosByID[videoID] else { return nil }
+                let playbackPath = video.playbackPath(
+                    quality: settings.playbackQuality,
+                    profile: settings.optimizationProfile,
+                    isReadableFile: isReadableFile
+                )
+                guard isReadableFile(playbackPath) else { return nil }
+                return (video, playbackPath)
             }
             guard !playable.isEmpty else { return nil }
 
-            let orderedVideos: [ManagedVideo]
+            let orderedVideos: [(ManagedVideo, String)]
             if configuration.mode == .single {
-                let selected = playable.first { $0.id == configuration.startVideoID } ?? playable[0]
+                let selected = playable.first { $0.0.id == configuration.startVideoID } ?? playable[0]
                 orderedVideos = [selected]
             } else {
-                let startIndex = playable.firstIndex { $0.id == configuration.startVideoID } ?? 0
+                let startIndex = playable.firstIndex { $0.0.id == configuration.startVideoID } ?? 0
                 orderedVideos = Array(playable[startIndex...]) + Array(playable[..<startIndex])
             }
 
             return ScreenSaverDisplayManifest(
                 displayID: configuration.screenID,
-                orderedVideoPaths: orderedVideos.map(\.path)
+                orderedVideoPaths: orderedVideos.map(\.1)
             )
         }
 

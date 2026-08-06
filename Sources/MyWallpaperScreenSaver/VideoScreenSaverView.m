@@ -302,15 +302,24 @@
 
         AVPlayerItem *item = strongSelf.player.currentItem;
         NSError *error = item.error;
+        AVPlayerItemAccessLogEvent *accessEvent = item.accessLog.events.lastObject;
+        NSInteger droppedFrames = accessEvent ? accessEvent.numberOfDroppedVideoFrames : -1;
+        NSInteger stalls = accessEvent ? accessEvent.numberOfStalls : -1;
+        double startupTime = accessEvent ? accessEvent.startupTime : -1;
+        double videoBitRate = accessEvent ? accessEvent.averageVideoBitrate : -1;
         os_log_with_type(MWScreenSaverDiagnosticLog(),
                          error ? OS_LOG_TYPE_ERROR : OS_LOG_TYPE_DEFAULT,
-            "playback-probe owner=%{public}p display=%{public}@ after=%{public}@ playerStatus=%{public}ld itemStatus=%{public}ld rate=%{public}.2f errorDomain=%{public}@ errorCode=%{public}ld",
+            "playback-probe owner=%{public}p display=%{public}@ after=%{public}@ playerStatus=%{public}ld itemStatus=%{public}ld rate=%{public}.2f dropped=%{public}ld stalls=%{public}ld startup=%{public}.3f bitrate=%{public}.0f errorDomain=%{public}@ errorCode=%{public}ld",
             (__bridge void *)strongSelf,
             strongSelf.activeDisplayID ?: @"none",
             label,
             (long)strongSelf.player.timeControlStatus,
             (long)item.status,
             strongSelf.player.rate,
+            (long)droppedFrames,
+            (long)stalls,
+            startupTime,
+            videoBitRate,
             error.domain ?: @"none",
             (long)error.code);
     });

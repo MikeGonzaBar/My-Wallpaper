@@ -18,7 +18,9 @@ If you have just cloned the repository, start with the [first-time setup guide](
 
 - Assigns a different video or playlist to every connected display.
 - Lets each playlist start at a selected item and continue in order forever.
+- Supports Light, Dark, and Automatic appearance modes; Automatic follows macOS and is the default.
 - Imports MOV, MP4, and M4V files into `~/Library/Application Support/My Wallpaper/Videos`.
+- Offers an optional Performance Mode that uses Apple's hardware video encoder to create reusable local HEVC copies at 1440p60 or 4K60 while preserving the originals.
 - Keeps video files and settings on this Mac; nothing is uploaded.
 - Provides a menu-bar icon for starting the native My Wallpaper screen saver or putting the display to sleep.
 - Includes a universal `arm64`/`x86_64` `.saver` module for macOS's automatic screen-saver system.
@@ -42,6 +44,17 @@ For a drag-to-Applications installer, download **My-Wallpaper.dmg** from the Git
 5. Use **Preview all displays** to verify the videos and scaling. Preview is non-locking and ends automatically after 45 seconds.
 
 ![Displays and playlist configuration](assets/readme-displays.png)
+
+## Optional Performance Mode
+
+Open **Preferences → Performance Mode** to choose between:
+
+- **Original Quality**: plays imported files unchanged.
+- **Performance Mode**: requires Apple's hardware HEVC encoder and creates local playback copies capped at 60 fps. The recommended default is **1440p / 60 FPS**; **4K / 60 FPS** is available for higher-resolution displays. Optimization pauses during Preview and native screen-saver playback so it does not compete for the media engine.
+
+Conversion runs locally and shows per-video and overall progress. My Wallpaper automatically uses each original until its performance copy is ready, and falls back to the original if conversion fails. The same optimized file is reused anywhere that managed video appears, including multiple display assignments.
+
+Originals are never modified. **Delete Performance Copies** reclaims their storage without removing imported videos or display assignments. High-frame-rate, high-bitrate, and unusually demanding originals are marked **High Load** in the playlist UI.
 
 ## Menu-bar screen saver and lock
 
@@ -80,7 +93,7 @@ The app writes a versioned native playback manifest in Application Support. Conf
 
 **Preview All Displays** is separate from the real saver: it uses temporary app-owned windows, does not lock, keeps the displays awake only during the preview, and exits after 45 seconds or on input.
 
-![Preferences and macOS integration](assets/readme-preferences.png)
+![Preferences showing native screen saver setup, Appearance options, Performance Mode, playback, and privacy controls](assets/readme-preferences.png)
 
 ## Build locally
 
@@ -122,11 +135,11 @@ To create the installer DMG locally after building:
 
 The result is `dist/My-Wallpaper.dmg`.
 
-GitHub Actions runs tests and the release build on `macos-14` for pushes, pull requests, and manual runs. App and saver versions come from `support/version.env`, and a release tag must match that marketing version. Push `v0.3.0` to publish both `My-Wallpaper.dmg` and `My-Wallpaper.app.zip` to a GitHub Release:
+GitHub Actions runs tests and the release build on `macos-14` for pushes, pull requests, and manual runs. App and saver versions come from `support/version.env`, and a release tag must match that marketing version. Push `v0.3.1` to publish both `My-Wallpaper.dmg` and `My-Wallpaper.app.zip` to a GitHub Release:
 
 ```sh
-git tag v0.3.0
-git push origin v0.3.0
+git tag v0.3.1
+git push origin v0.3.1
 ```
 
 For signed distribution, add these repository secrets before pushing the tag:
@@ -141,4 +154,4 @@ When these secrets are present, the workflow signs and notarizes/staples both th
 
 ## Data and privacy
 
-Imported videos are copied into the app's Application Support directory. Settings are stored in `~/Library/Application Support/My Wallpaper/settings.json`, the native module reads `screensaver-manifest-v1.json`, and the app also keeps its local preferences. The app does not require an account or network connection. Automation access is used only for the read-only selected-saver verification described above.
+Imported videos are copied into the app's Application Support directory. Optional performance copies are stored separately under `~/Library/Application Support/My Wallpaper/Optimized Videos` and can be deleted without affecting originals. Settings are stored in `~/Library/Application Support/My Wallpaper/settings.json`, the native module reads `screensaver-manifest-v1.json`, and the app also keeps its local preferences. The app does not require an account or network connection. Automation access is used only for the read-only selected-saver verification described above.

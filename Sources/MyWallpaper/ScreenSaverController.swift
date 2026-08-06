@@ -18,6 +18,7 @@ final class FullScreenPreviewController {
     private let activityAssertion: PreviewActivityAsserting
 
     var onError: ((String) -> Void)?
+    var onDismiss: (() -> Void)?
     var isPresenting: Bool { !playbackWindows.isEmpty }
 
     init(activityAssertion: PreviewActivityAsserting = PreviewActivityAssertion()) {
@@ -72,11 +73,12 @@ final class FullScreenPreviewController {
         self.scaling = scaling
     }
 
-    func previewAllDisplays() {
-        guard !isPresenting else { return }
+    @discardableResult
+    func previewAllDisplays() -> Bool {
+        guard !isPresenting else { return false }
         guard let fallbackPlan else {
             onError?("Choose at least one readable video before starting Preview All Displays.")
-            return
+            return false
         }
 
         var pendingWindows: [NSWindow] = []
@@ -109,12 +111,12 @@ final class FullScreenPreviewController {
 
         guard !pendingWindows.isEmpty else {
             onError?("No connected displays are available for preview.")
-            return
+            return false
         }
         guard activityAssertion.acquire() else {
             pendingViews.forEach { $0.stop() }
             onError?("macOS could not keep the display awake for preview. Try again.")
-            return
+            return false
         }
 
         playbackWindows = pendingWindows
@@ -141,9 +143,11 @@ final class FullScreenPreviewController {
             guard !Task.isCancelled else { return }
             self?.dismiss()
         }
+        return true
     }
 
     func dismiss() {
+        let wasPresenting = isPresenting
         inputArmingTask?.cancel()
         inputArmingTask = nil
         countdownTask?.cancel()
@@ -166,6 +170,9 @@ final class FullScreenPreviewController {
         if cursorIsHidden {
             NSCursor.unhide()
             cursorIsHidden = false
+        }
+        if wasPresenting {
+            onDismiss?()
         }
     }
 

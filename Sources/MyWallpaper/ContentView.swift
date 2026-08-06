@@ -36,6 +36,11 @@ struct ContentView: View {
         .onAppear {
             store.refreshScreens()
             reconcileSelectedScreen(with: store.availableScreens)
+            store.setDisplaysPageVisible(selectedSection == .displays)
+        }
+        .onDisappear { store.setDisplaysPageVisible(false) }
+        .onChange(of: selectedSection) { _, section in
+            store.setDisplaysPageVisible(section == .displays)
         }
         .onChange(of: store.availableScreens) { _, screens in
             reconcileSelectedScreen(with: screens)
@@ -201,16 +206,22 @@ struct ContentView: View {
                 ScreenSaverSetupPanel(store: store)
                 .retroStaggeredEntrance(index: 1, direction: pageMotionDirection)
 
+                appearanceWindow
+                    .retroStaggeredEntrance(index: 2, direction: pageMotionDirection)
+
+                PerformanceModePanel(store: store)
+                    .retroStaggeredEntrance(index: 3, direction: pageMotionDirection)
+
                 HStack(alignment: .top, spacing: 16) {
                     playbackWindow
                     privacyWindow
                 }
-                .retroStaggeredEntrance(index: 2, direction: pageMotionDirection)
+                .retroStaggeredEntrance(index: 4, direction: pageMotionDirection)
 
                 Text("NOTE: SET THE PASSWORD DELAY IN SYSTEM SETTINGS → LOCK SCREEN.")
                     .font(RetroFont.label(size: 9))
                     .foregroundStyle(RetroPalette.secondaryInk)
-                    .retroStaggeredEntrance(index: 3, direction: pageMotionDirection)
+                    .retroStaggeredEntrance(index: 5, direction: pageMotionDirection)
             }
             .padding(24)
         }
@@ -284,7 +295,6 @@ struct ContentView: View {
                     scaling: store.settings.scaling,
                     isReadyForDisplay: $isPreviewReady
                 )
-                    .onAppear { player.play() }
                     .onDisappear { player.pause() }
                     .task(id: ObjectIdentifier(player)) {
                         hasPreviewLoadingMinimumElapsed = false
@@ -442,6 +452,27 @@ struct ContentView: View {
                     isOn: store.settings.isMuted,
                     action: { store.setMuted(!store.settings.isMuted) }
                 )
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var appearanceWindow: some View {
+        RetroWindow(title: "APPEARANCE") {
+            HStack(spacing: 16) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("LIGHT, DARK, OR FOLLOW MACOS.")
+                        .font(RetroFont.label(size: 10))
+                    Text("AUTOMATIC IS THE DEFAULT.")
+                        .font(RetroFont.body(size: 9))
+                        .foregroundStyle(RetroPalette.secondaryInk)
+                }
+                Spacer()
+                AppearanceModePicker(
+                    mode: store.appearanceMode,
+                    onSelect: store.setAppearanceMode
+                )
+                .frame(width: 285)
             }
         }
         .frame(maxWidth: .infinity)
@@ -624,6 +655,11 @@ private struct PlaylistRow: View {
             Text(video.displayName.uppercased())
                 .font(RetroFont.body(size: 9))
                 .lineLimit(1)
+
+            if video.sourceMetadata?.isDemanding == true {
+                Text("⚠ HIGH LOAD")
+                    .font(RetroFont.label(size: 8))
+            }
 
             Spacer()
 

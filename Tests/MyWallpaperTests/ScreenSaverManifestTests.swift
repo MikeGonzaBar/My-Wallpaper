@@ -115,6 +115,59 @@ final class ScreenSaverManifestTests: XCTestCase {
         XCTAssertFalse(decoded.isMuted)
     }
 
+    func testPerformanceModeUsesMatchingReadableOptimizedCopy() throws {
+        var settings = makeSettings(mode: .single, videoIDs: ["one"], startVideoID: "one")
+        settings.playbackQuality = .performance
+        settings.optimizationProfile = .efficient
+        settings.videos[0].optimizedPath = "/one-optimized.mp4"
+        settings.videos[0].optimizedProfile = .efficient
+
+        let manifest = try XCTUnwrap(ScreenSaverManifestBuilder.build(
+            settings: settings,
+            connectedDisplayIDs: ["display"],
+            isReadableFile: { _ in true }
+        ))
+
+        XCTAssertEqual(manifest.displays[0].orderedVideoPaths, ["/one-optimized.mp4"])
+    }
+
+    func testPerformanceModeFallsBackWhenOptimizedCopyIsMissing() throws {
+        var settings = makeSettings(mode: .single, videoIDs: ["one"], startVideoID: "one")
+        settings.playbackQuality = .performance
+        settings.videos[0].optimizedPath = "/one-optimized.mp4"
+        settings.videos[0].optimizedProfile = .efficient
+
+        let manifest = try XCTUnwrap(ScreenSaverManifestBuilder.build(
+            settings: settings,
+            connectedDisplayIDs: ["display"],
+            isReadableFile: { $0 != "/one-optimized.mp4" }
+        ))
+
+        XCTAssertEqual(manifest.displays[0].orderedVideoPaths, ["/one.mp4"])
+    }
+
+    func testOriginalQualityIgnoresOptimizedCopy() throws {
+        var settings = makeSettings(mode: .single, videoIDs: ["one"], startVideoID: "one")
+        settings.videos[0].optimizedPath = "/one-optimized.mp4"
+        settings.videos[0].optimizedProfile = .efficient
+
+        let manifest = try XCTUnwrap(build(settings))
+
+        XCTAssertEqual(manifest.displays[0].orderedVideoPaths, ["/one.mp4"])
+    }
+
+    func testOlderSettingsDefaultToOriginalQuality() throws {
+        let legacyJSON = #"{"videos":[],"screens":[],"isMuted":true,"scaling":"Fill screen"}"#
+
+        let decoded = try JSONDecoder().decode(
+            WallpaperSettings.self,
+            from: Data(legacyJSON.utf8)
+        )
+
+        XCTAssertEqual(decoded.playbackQuality, .original)
+        XCTAssertEqual(decoded.optimizationProfile, .efficient)
+    }
+
     private func build(_ settings: WallpaperSettings) -> ScreenSaverManifest? {
         ScreenSaverManifestBuilder.build(
             settings: settings,
