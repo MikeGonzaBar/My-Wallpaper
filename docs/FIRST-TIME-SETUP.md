@@ -1,4 +1,4 @@
-# First-time setup
+# First-time setup — My Wallpaper 0.4.0
 
 This guide takes a new macOS user from a fresh clone to a running copy of My Wallpaper. It does not require an Apple Developer account, signing certificate, or GitHub Actions secrets.
 
@@ -41,10 +41,12 @@ If you downloaded the project as a ZIP instead, open Terminal and use `cd` to mo
 
 ## 3. Run the checks
 
-The project has Swift unit tests and native screen-saver manifest tests. Run both before building:
+The project has Swift unit tests plus focused video-library, launch-policy, and native screen-saver tests. Run them before building:
 
 ```sh
 swift test
+./scripts/test-video-library-workflow.sh
+./scripts/test-login-launch-policy.sh
 ./scripts/test-saver-manifest.sh
 ```
 
@@ -78,12 +80,16 @@ open "dist/My Wallpaper.app"
 
 1. In My Wallpaper, select a display card.
 2. Choose **Single video** to use one movie, or **Playlist** to loop several movies.
-3. Add MOV, MP4, or M4V video files.
+3. Choose **Import New** to add MOV, MP4, or M4V files to the shared Video Library, or **Add From Library** to reuse an existing video without copying it again.
 4. Click **Preview all displays** to make sure the playback and sizing look right. Preview ends automatically after 45 seconds and does not lock your Mac.
+
+The import review compares sampled content fingerprints, not filenames. A renamed copy selects the existing library record, while a genuinely different video remains importable even if it has the same filename.
 
 In **Preferences**, choose **Automatic** (the default) to follow your Mac's Light or Dark appearance, or select a fixed **Light** or **Dark** mode. The app transitions between modes diagonally from the upper-left to the lower-right.
 
 If high-resolution or high-frame-rate videos stutter, enable **Performance Mode** in Preferences. The recommended **1440p / 60 FPS** option creates local HEVC playback copies while preserving the imported originals. Conversion progress and storage use appear in the same panel; originals remain active until each copy is ready.
+
+Enable **Open My Wallpaper at Login** if you want the app to start quietly in the menu bar after login. macOS remains the source of truth for this setting and may ask you to approve it in **System Settings → General → Login Items**.
 
 Imported videos are copied to `~/Library/Application Support/My Wallpaper/Videos`, so do not delete that folder while using the app.
 

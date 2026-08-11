@@ -8,6 +8,11 @@ struct ContentView: View {
     @ObservedObject var store: WallpaperStore
     @State private var selectedScreenID: String?
     @State private var isPickingVideo = false
+    @State private var importDestinationScreenID: String?
+    @State private var isPreparingImports = false
+    @State private var importReviewRequest: ImportReviewRequest?
+    @State private var libraryPickerRequest: LibraryPickerRequest?
+    @State private var selectedLibraryVideoID: String?
     @State private var isPreviewReady = false
     @State private var hasPreviewLoadingMinimumElapsed = false
     @State private var selectedSection = SidebarSection.displays
@@ -30,8 +35,64 @@ struct ContentView: View {
             allowedContentTypes: [.movie],
             allowsMultipleSelection: true
         ) { result in
-            guard case let .success(urls) = result, let selectedScreenID else { return }
-            Task { await store.importVideos(from: urls, for: selectedScreenID) }
+            guard case let .success(urls) = result, !urls.isEmpty else { return }
+            Task {
+                isPreparingImports = true
+                let candidates = await store.prepareVideoImports(from: urls)
+                isPreparingImports = false
+                if !candidates.isEmpty {
+                    importReviewRequest = ImportReviewRequest(
+                        candidates: candidates,
+                        destinationScreenID: importDestinationScreenID
+                    )
+                }
+            }
+        }
+        .sheet(item: $libraryPickerRequest) { request in
+            AddFromLibrarySheet(
+                store: store,
+                screenID: request.screenID,
+                initialVideoID: request.initialVideoID,
+                onImportNew: { beginImport(destinationScreenID: request.screenID) },
+                onDismiss: { libraryPickerRequest = nil }
+            )
+        }
+        .sheet(item: $importReviewRequest) { request in
+            ImportVideosReviewSheet(
+                store: store,
+                candidates: request.candidates,
+                destinationScreenID: request.destinationScreenID,
+                onChooseMore: {
+                    importReviewRequest = nil
+                    DispatchQueue.main.async {
+                        beginImport(destinationScreenID: request.destinationScreenID)
+                    }
+                },
+                onComplete: { selectedVideoID in
+                    if request.destinationScreenID == nil {
+                        selectedLibraryVideoID = selectedVideoID
+                        selectSection(.library)
+                    }
+                    importReviewRequest = nil
+                    importDestinationScreenID = nil
+                },
+                onDismiss: {
+                    importReviewRequest = nil
+                    importDestinationScreenID = nil
+                }
+            )
+        }
+        .overlay {
+            if isPreparingImports {
+                ZStack {
+                    DitherPattern(opacity: 0.84)
+                    Text("ANALYZING VIDEO CONTENT…")
+                        .font(RetroFont.label(size: 10))
+                        .padding(14)
+                        .background(RetroPalette.paper)
+                        .overlay { Rectangle().stroke(RetroPalette.ink, lineWidth: 1) }
+                }
+            }
         }
         .onAppear {
             store.refreshScreens()
@@ -89,6 +150,14 @@ struct ContentView: View {
 
             RetroNavigationItem(
                 marker: "02",
+                title: "VIDEO LIBRARY",
+                selected: selectedSection == .library
+            ) {
+                selectSection(.library)
+            }
+
+            RetroNavigationItem(
+                marker: "03",
                 title: "PREFERENCES",
                 selected: selectedSection == .preferences
             ) {
@@ -120,6 +189,18 @@ struct ContentView: View {
                 switch selectedSection {
                 case .displays:
                     displaysContent
+                case .library:
+                    VideoLibraryView(
+                        store: store,
+                        selectedVideoID: $selectedLibraryVideoID,
+                        onImport: { beginImport(destinationScreenID: nil) },
+                        onAddToDisplay: { video in
+                            guard let screenID = selectedScreenID ?? store.availableScreens.first?.id else {
+                                return
+                            }
+                            showLibraryPicker(for: screenID, initialVideoID: video.id)
+                        }
+                    )
                 case .preferences:
                     preferencesContent
                 }
@@ -137,7 +218,7 @@ struct ContentView: View {
                 RetroPageHeader(
                     code: "SYS/01",
                     title: "DISPLAY CONTROL",
-                    subtitle: "ASSIGN A VIDEO SIGNAL TO EACH CONNECTED SCREEN."
+                    subtitle: "ASSIGN LIBRARY VIDEOS TO EACH CONNECTED SCREEN."
                 ) {
                     RetroStatusBadge(text: store.statusText, active: store.isScreenSaverReady)
                 }
@@ -209,19 +290,22 @@ struct ContentView: View {
                 appearanceWindow
                     .retroStaggeredEntrance(index: 2, direction: pageMotionDirection)
 
-                PerformanceModePanel(store: store)
+                LaunchAtLoginPanel(controller: store.launchAtLogin)
                     .retroStaggeredEntrance(index: 3, direction: pageMotionDirection)
+
+                PerformanceModePanel(store: store)
+                    .retroStaggeredEntrance(index: 4, direction: pageMotionDirection)
 
                 HStack(alignment: .top, spacing: 16) {
                     playbackWindow
                     privacyWindow
                 }
-                .retroStaggeredEntrance(index: 4, direction: pageMotionDirection)
+                .retroStaggeredEntrance(index: 5, direction: pageMotionDirection)
 
                 Text("NOTE: SET THE PASSWORD DELAY IN SYSTEM SETTINGS → LOCK SCREEN.")
                     .font(RetroFont.label(size: 9))
                     .foregroundStyle(RetroPalette.secondaryInk)
-                    .retroStaggeredEntrance(index: 5, direction: pageMotionDirection)
+                    .retroStaggeredEntrance(index: 6, direction: pageMotionDirection)
             }
             .padding(24)
         }
@@ -254,7 +338,7 @@ struct ContentView: View {
                                  ? "USING FALLBACK PLAYLIST"
                                  : videoCount == 0
                                     ? "NO SIGNAL"
-                                    : "\(configuration.mode.rawValue.uppercased()) / \(videoCount) FILE\(videoCount == 1 ? "" : "S")")
+                                    : "\(configuration.mode.rawValue.uppercased()) / \(videoCount) VIDEO\(videoCount == 1 ? "" : "S")")
                                 .font(RetroFont.body(size: 9))
                                 .opacity(0.72)
                         }
@@ -321,7 +405,9 @@ struct ContentView: View {
                     Text("CHOOSE ONE VIDEO OR SWITCH TO PLAYLIST MODE.")
                         .font(RetroFont.body(size: 10))
                         .foregroundStyle(RetroPalette.surfaceHighest)
-                    Button("CHOOSE VIDEO…") { isPickingVideo = true }
+                    Button("CHOOSE FROM LIBRARY…") {
+                        showLibraryPicker(for: screenID)
+                    }
                         .buttonStyle(RetroButtonStyle(primary: true))
                 }
             }
@@ -355,7 +441,7 @@ struct ContentView: View {
                     .font(RetroFont.label(size: 10))
                     .lineLimit(1)
                 Text(configuration.mode == .playlist
-                     ? "STARTS HERE / LOOPS \(videos.count) FILES"
+                     ? "STARTS HERE / LOOPS \(videos.count) VIDEOS"
                      : "CONTINUOUS LOOP")
                     .font(RetroFont.body(size: 9))
                     .foregroundStyle(RetroPalette.secondaryInk)
@@ -373,7 +459,7 @@ struct ContentView: View {
         let configuration = store.configuration(for: screenID)
         let videos = store.videos(for: screenID)
 
-        return RetroWindow(title: "CONTENT // \(configuration.screenName.uppercased())") {
+        return RetroWindow(title: "PLAYLIST // \(configuration.screenName.uppercased())") {
             VStack(spacing: 16) {
                 HStack(spacing: 12) {
                     Text("PLAYBACK TYPE")
@@ -389,14 +475,19 @@ struct ContentView: View {
 
                     Spacer()
 
-                    Button(configuration.mode == .single ? "CHOOSE VIDEO…" : "ADD VIDEOS…") {
-                        isPickingVideo = true
+                    Button(configuration.mode == .single ? "CHOOSE FROM LIBRARY…" : "ADD FROM LIBRARY…") {
+                        showLibraryPicker(for: screenID)
                     }
                     .buttonStyle(RetroButtonStyle(primary: true, compact: true))
+
+                    Button("IMPORT NEW…") {
+                        beginImport(destinationScreenID: screenID)
+                    }
+                    .buttonStyle(RetroButtonStyle(compact: true))
                 }
 
                 if videos.isEmpty {
-                    Text("[ NO VIDEO FILES ASSIGNED ]")
+                    Text("[ NO VIDEOS ASSIGNED FROM THE LIBRARY ]")
                         .font(RetroFont.body(size: 11))
                         .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
                 } else {
@@ -529,11 +620,36 @@ struct ContentView: View {
             selectedSection = section
         }
     }
+
+    private func showLibraryPicker(for screenID: String, initialVideoID: String? = nil) {
+        libraryPickerRequest = LibraryPickerRequest(
+            screenID: screenID,
+            initialVideoID: initialVideoID
+        )
+    }
+
+    private func beginImport(destinationScreenID: String?) {
+        importDestinationScreenID = destinationScreenID
+        isPickingVideo = true
+    }
 }
 
 private enum SidebarSection: Int {
     case displays
+    case library
     case preferences
+}
+
+private struct LibraryPickerRequest: Identifiable {
+    let id = UUID()
+    let screenID: String
+    let initialVideoID: String?
+}
+
+private struct ImportReviewRequest: Identifiable {
+    let id = UUID()
+    let candidates: [VideoImportCandidate]
+    let destinationScreenID: String?
 }
 
 private struct PlayerPreviewView: NSViewRepresentable {

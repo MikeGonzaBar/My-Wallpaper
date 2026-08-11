@@ -8,6 +8,8 @@ The interface follows a classic System 1984 visual language: monochrome controls
 
 ## Prototype status
 
+The current release is **My Wallpaper 0.4.0 (build 6)**. It introduces the shared Video Library, duplicate-safe content imports, reusable display assignments, quiet launch at login, and the redesigned three-page Displays, Video Library, and Preferences workflow.
+
 This repository contains a working prototype. GitHub Actions produces an ad-hoc-signed app by default, so macOS may require **Control-click → Open** the first time. For public distribution, configure the optional Developer ID and notarization secrets documented below; without them, the app is not notarized by Apple.
 
 ## New here?
@@ -17,12 +19,14 @@ If you have just cloned the repository, start with the [first-time setup guide](
 ## What it does
 
 - Assigns a different video or playlist to every connected display.
+- Keeps imported videos in one searchable shared library so the same managed file can be assigned to multiple displays without importing it again.
 - Lets each playlist start at a selected item and continue in order forever.
 - Supports Light, Dark, and Automatic appearance modes; Automatic follows macOS and is the default.
 - Imports MOV, MP4, and M4V files into `~/Library/Application Support/My Wallpaper/Videos`.
 - Offers an optional Performance Mode that uses Apple's hardware video encoder to create reusable local HEVC copies at 1440p60 or 4K60 while preserving the originals.
 - Keeps video files and settings on this Mac; nothing is uploaded.
 - Provides a menu-bar icon for starting the native My Wallpaper screen saver or putting the display to sleep.
+- Can open automatically after login so its menu-bar controls are always available.
 - Includes a universal `arm64`/`x86_64` `.saver` module for macOS's automatic screen-saver system.
 
 ## Install the app
@@ -38,12 +42,20 @@ For a drag-to-Applications installer, download **My-Wallpaper.dmg** from the Git
 ## Configure displays
 
 1. Open **My Wallpaper** and select a display card.
-2. Choose **Single video** and add one video, or choose **Playlist** and add multiple videos.
+2. Choose **Single video** or **Playlist**, then use **Add From Library** to reuse imported videos or **Import New** to review and copy new files into the shared library.
 3. Use **Start here** to choose which playlist item plays first.
 4. Reorder videos with **Go Up** and **Go Down**. The playlist loops continuously.
 5. Use **Preview all displays** to verify the videos and scaling. Preview is non-locking and ends automatically after 45 seconds.
 
 ![Displays and playlist configuration](assets/readme-displays.png)
+
+## Manage the shared video library
+
+Open **Video Library** to search every imported video, filter for high-load originals or ready performance copies, inspect which displays use a video, and reveal its managed file in Finder. **Import Videos** reviews metadata and content fingerprints before copying new MOV, MP4, or M4V files into My Wallpaper. Renamed copies reuse and select the existing library record, while genuinely different files can share a name. An imported video remains available after it is removed from a display playlist; **Remove Unused** is the explicit permanent-delete action for videos that are no longer assigned anywhere.
+
+When upgrading from the per-display import model, My Wallpaper automatically consolidates confirmed legacy copies with matching names, sizes, and sampled content fingerprints. Display assignments, playlist order, and starting-video selections are remapped to the retained shared-library record.
+
+![Shared Video Library with reusable videos and display usage details](assets/readme-library.png)
 
 ## Optional Performance Mode
 
@@ -76,6 +88,8 @@ ScreenSaverEngine—not My Wallpaper's app window—handles input dismissal and 
 
 The menu-bar icon is available while My Wallpaper is running, even if its main window is closed. Quit the app to remove the icon.
 
+Enable **Open My Wallpaper at Login** in Preferences to register the installed app with macOS Login Items. If macOS requires approval, use the provided button to open **System Settings → General → Login Items**. Login launches start quietly in the menu bar; opening My Wallpaper normally still shows its main window.
+
 ## Native screen saver setup
 
 Manual menu activation and automatic idle activation both require the native `.saver`:
@@ -93,7 +107,7 @@ The app writes a versioned native playback manifest in Application Support. Conf
 
 **Preview All Displays** is separate from the real saver: it uses temporary app-owned windows, does not lock, keeps the displays awake only during the preview, and exits after 45 seconds or on input.
 
-![Preferences showing native screen saver setup, Appearance options, Performance Mode, playback, and privacy controls](assets/readme-preferences.png)
+![Preferences showing native screen saver setup, Appearance, launch at login, Performance Mode, playback, and privacy controls](assets/readme-preferences.png)
 
 ## Build locally
 
@@ -135,11 +149,11 @@ To create the installer DMG locally after building:
 
 The result is `dist/My-Wallpaper.dmg`.
 
-GitHub Actions runs tests and the release build on `macos-14` for pushes, pull requests, and manual runs. App and saver versions come from `support/version.env`, and a release tag must match that marketing version. Push `v0.3.1` to publish both `My-Wallpaper.dmg` and `My-Wallpaper.app.zip` to a GitHub Release:
+GitHub Actions runs tests and the release build on `macos-14` for pushes, pull requests, and manual runs. App and saver versions come from `support/version.env`, and a release tag must match that marketing version. Push `v0.4.0` to publish both `My-Wallpaper.dmg` and `My-Wallpaper.app.zip` to a GitHub Release:
 
 ```sh
-git tag v0.3.1
-git push origin v0.3.1
+git tag v0.4.0
+git push origin v0.4.0
 ```
 
 For signed distribution, add these repository secrets before pushing the tag:

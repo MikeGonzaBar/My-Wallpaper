@@ -16,6 +16,8 @@ final class WallpaperStore: ObservableObject {
     @Published private(set) var appearanceMode: AppearanceMode
     @Published private(set) var appearanceTransitionID = UUID()
 
+    let launchAtLogin: LaunchAtLoginController
+
     private let nativeScreenSaver = NativeScreenSaverController()
     private let previewController = FullScreenPreviewController()
     private let videoOptimizer: VideoOptimizing
@@ -45,8 +47,12 @@ final class WallpaperStore: ObservableObject {
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
-    init(videoOptimizer: VideoOptimizing = AVFoundationVideoOptimizer()) {
+    init(
+        videoOptimizer: VideoOptimizing = AVFoundationVideoOptimizer(),
+        launchAtLogin: LaunchAtLoginController? = nil
+    ) {
         self.videoOptimizer = videoOptimizer
+        self.launchAtLogin = launchAtLogin ?? LaunchAtLoginController()
         appearanceMode = AppearanceMode(
             rawValue: UserDefaults.standard.string(forKey: appearanceModeKey) ?? ""
         ) ?? .automatic
@@ -74,6 +80,7 @@ final class WallpaperStore: ObservableObject {
         removeOrphanedOptimizedFiles()
         refreshScreens()
         migrateLegacyVideoToScreensIfNeeded()
+        migrateDuplicateLibraryVideosIfNeeded()
         persistSharedSettings()
         applySettings()
         observeDisplayChanges()
@@ -88,6 +95,7 @@ final class WallpaperStore: ObservableObject {
         }
         Task { await refreshScreenSaverIntegrationState() }
         Task { await refreshVideoMetadata() }
+        Task { await refreshVideoFingerprints() }
         if settings.playbackQuality == .performance {
             optimizeExistingVideos()
         }
@@ -171,19 +179,56 @@ final class WallpaperStore: ObservableObject {
         }
     }
 
-    func importVideos(from sourceURLs: [URL], for screenID: String) async {
-        guard !sourceURLs.isEmpty else { return }
+    func prepareVideoImports(from sourceURLs: [URL]) async -> [VideoImportCandidate] {
+        await refreshVideoFingerprints()
+        let candidateIDs = sourceURLs.map { _ in UUID() }
+        let names = sourceURLs.map { $0.deletingPathExtension().lastPathComponent }
+        var fileSizes: [Int64] = []
+        var metadataValues: [VideoTechnicalMetadata?] = []
+        var fingerprints: [String?] = []
+
+        for sourceURL in sourceURLs {
+            let hasAccess = sourceURL.startAccessingSecurityScopedResource()
+            let attributes = try? FileManager.default.attributesOfItem(atPath: sourceURL.path)
+            fileSizes.append((attributes?[.size] as? NSNumber)?.int64Value ?? 0)
+            metadataValues.append(try? await videoOptimizer.metadata(for: sourceURL))
+            fingerprints.append(await contentFingerprint(for: sourceURL))
+            if hasAccess { sourceURL.stopAccessingSecurityScopedResource() }
+        }
+        let duplicateReferences = VideoLibraryLogic.duplicateReferences(
+            candidateIDs: candidateIDs,
+            for: names,
+            fingerprints: fingerprints,
+            existingVideos: settings.videos
+        )
+        return sourceURLs.indices.map { index in
+            VideoImportCandidate(
+                id: candidateIDs[index],
+                sourceURL: sourceURLs[index],
+                displayName: names[index],
+                fileSize: fileSizes[index],
+                metadata: metadataValues[index],
+                contentFingerprint: fingerprints[index],
+                duplicate: duplicateReferences[index]
+            )
+        }
+    }
+
+    func importVideosToLibrary(
+        candidates: [VideoImportCandidate]
+    ) async -> [ManagedVideo] {
+        let importable = candidates.filter { !$0.isDuplicate }
+        guard !importable.isEmpty else { return [] }
         isImporting = true
         errorMessage = nil
         defer { isImporting = false }
 
         var imported: [ManagedVideo] = []
+        var copiedURLs: [URL] = []
         do {
             let directory = try managedVideosDirectory()
-            let mode = configuration(for: screenID).mode
-            let selectedURLs = mode == .single ? Array(sourceURLs.prefix(1)) : sourceURLs
-
-            for sourceURL in selectedURLs {
+            for candidate in importable {
+                let sourceURL = candidate.sourceURL
                 let hasAccess = sourceURL.startAccessingSecurityScopedResource()
                 defer {
                     if hasAccess { sourceURL.stopAccessingSecurityScopedResource() }
@@ -193,36 +238,100 @@ final class WallpaperStore: ObservableObject {
                 let destination = directory.appendingPathComponent(id)
                     .appendingPathExtension(sourceURL.pathExtension.lowercased())
                 try FileManager.default.copyItem(at: sourceURL, to: destination)
+                copiedURLs.append(destination)
+                let metadata: VideoTechnicalMetadata?
+                if let candidateMetadata = candidate.metadata {
+                    metadata = candidateMetadata
+                } else {
+                    metadata = try? await videoOptimizer.metadata(for: destination)
+                }
                 imported.append(ManagedVideo(
                     id: id,
-                    displayName: sourceURL.deletingPathExtension().lastPathComponent,
+                    displayName: candidate.displayName,
                     path: destination.path,
-                    sourceMetadata: try? await videoOptimizer.metadata(for: destination)
+                    sourceMetadata: metadata,
+                    contentFingerprint: candidate.contentFingerprint
                 ))
             }
 
             settings.videos.append(contentsOf: imported)
-            mutateConfiguration(for: screenID) { configuration in
-                if configuration.mode == .single {
-                    configuration.videoIDs = [imported[0].id]
-                } else {
-                    configuration.videoIDs.append(contentsOf: imported.map(\.id))
-                }
-                if !configuration.videoIDs.contains(configuration.startVideoID ?? "") {
-                    configuration.startVideoID = configuration.videoIDs.first
-                }
-            }
-            removeUnusedVideos()
             saveAndApply()
-            refreshPreview()
             if settings.playbackQuality == .performance {
                 optimizeExistingVideos()
             }
+            return imported
         } catch {
-            for video in imported {
-                try? FileManager.default.removeItem(at: video.url)
+            for url in copiedURLs {
+                try? FileManager.default.removeItem(at: url)
             }
             errorMessage = "The video couldn’t be imported: \(error.localizedDescription)"
+            return []
+        }
+    }
+
+    func assignVideos(_ videoIDs: [String], to screenID: String) {
+        let knownIDs = Set(settings.videos.map(\.id))
+        let additions = videoIDs.filter { knownIDs.contains($0) }
+        guard !additions.isEmpty else { return }
+        mutateConfiguration(for: screenID) { configuration in
+            configuration.videoIDs = VideoLibraryLogic.assigning(
+                additions,
+                to: configuration.videoIDs,
+                mode: configuration.mode
+            )
+            if !configuration.videoIDs.contains(configuration.startVideoID ?? "") {
+                configuration.startVideoID = configuration.videoIDs.first
+            }
+        }
+        saveAndApply()
+        refreshPreview()
+    }
+
+    func usageCount(for videoID: String) -> Int {
+        VideoLibraryLogic.usageCount(for: videoID, screens: settings.screens)
+    }
+
+    var unusedVideoCount: Int {
+        settings.videos.filter { usageCount(for: $0.id) == 0 }.count
+    }
+
+    @discardableResult
+    func removeVideoFromLibrary(_ videoID: String) -> Bool {
+        guard usageCount(for: videoID) == 0,
+              let index = settings.videos.firstIndex(where: { $0.id == videoID }) else {
+            return false
+        }
+        let video = settings.videos[index]
+        do {
+            try deleteManagedFiles(for: video)
+        } catch {
+            errorMessage = "The video couldn’t be deleted: \(error.localizedDescription)"
+            return false
+        }
+        settings.videos.remove(at: index)
+        saveAndApply()
+        return true
+    }
+
+    func removeUnusedLibraryVideos() {
+        let unused = settings.videos.filter { usageCount(for: $0.id) == 0 }
+        guard !unused.isEmpty else { return }
+        var deletedIDs = Set<String>()
+        var failureCount = 0
+        for video in unused {
+            do {
+                try deleteManagedFiles(for: video)
+                deletedIDs.insert(video.id)
+            } catch {
+                failureCount += 1
+            }
+        }
+        if !deletedIDs.isEmpty {
+            settings.videos.removeAll { deletedIDs.contains($0.id) }
+            saveAndApply()
+        }
+        if failureCount > 0 {
+            errorMessage = "\(failureCount) video\(failureCount == 1 ? "" : "s") couldn’t be deleted."
         }
     }
 
@@ -261,7 +370,6 @@ final class WallpaperStore: ObservableObject {
                 configuration.startVideoID = configuration.videoIDs.first
             }
         }
-        removeUnusedVideos()
         saveAndApply()
         refreshPreview()
     }
@@ -602,6 +710,28 @@ final class WallpaperStore: ObservableObject {
         try? FileManager.default.removeItem(at: file)
     }
 
+    private func deleteManagedFiles(for video: ManagedVideo) throws {
+        if let optimizedPath = video.optimizedPath {
+            let optimizedDirectory = try optimizedVideosDirectory().standardizedFileURL
+            try removeFileIfPresent(
+                at: URL(fileURLWithPath: optimizedPath),
+                ownedBy: optimizedDirectory
+            )
+        }
+        let managedDirectory = try managedVideosDirectory().standardizedFileURL
+        try removeFileIfPresent(at: video.url, ownedBy: managedDirectory)
+    }
+
+    private func removeFileIfPresent(at url: URL, ownedBy directory: URL) throws {
+        let file = url.standardizedFileURL
+        guard file.deletingLastPathComponent() == directory.standardizedFileURL else {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        if FileManager.default.fileExists(atPath: file.path) {
+            try FileManager.default.removeItem(at: file)
+        }
+    }
+
     private func applicationSupportDirectory() throws -> URL {
         let applicationSupport = try FileManager.default.url(
             for: .applicationSupportDirectory,
@@ -612,20 +742,6 @@ final class WallpaperStore: ObservableObject {
         let directory = applicationSupport.appendingPathComponent("My Wallpaper", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
-    }
-
-    private func removeUnusedVideos() {
-        let usedIDs = Set(settings.screens.flatMap {
-            $0.videoIDs + $0.stashedPlaylistVideoIDs
-        })
-        let unused = settings.videos.filter { !usedIDs.contains($0.id) }
-        for video in unused {
-            try? FileManager.default.removeItem(at: video.url)
-            if let optimizedPath = video.optimizedPath {
-                removeOptimizedFileIfOwned(atPath: optimizedPath)
-            }
-        }
-        settings.videos.removeAll { !usedIDs.contains($0.id) }
     }
 
     private func refreshPreview() {
@@ -702,6 +818,28 @@ final class WallpaperStore: ObservableObject {
             }
         }
         if changed { saveAndApply() }
+    }
+
+    private func refreshVideoFingerprints() async {
+        var changed = false
+        for videoID in settings.videos.map(\.id) {
+            guard !Task.isCancelled,
+                  let index = settings.videos.firstIndex(where: { $0.id == videoID }),
+                  settings.videos[index].contentFingerprint.map(
+                      VideoContentFingerprint.isCurrent
+                  ) != true else { continue }
+            if let fingerprint = await contentFingerprint(for: settings.videos[index].url) {
+                settings.videos[index].contentFingerprint = fingerprint
+                changed = true
+            }
+        }
+        if changed { saveAndApply() }
+    }
+
+    private func contentFingerprint(for url: URL) async -> String? {
+        await Task.detached(priority: .utility) {
+            VideoContentFingerprint.sampled(at: url)
+        }.value
     }
 
     private func runOptimization(profile: VideoOptimizationProfile) async {
@@ -902,6 +1040,7 @@ final class WallpaperStore: ObservableObject {
             Task { @MainActor [weak self] in
                 self?.inlinePreviewPolicy.applicationIsActive = true
                 self?.refreshMainWindowVisibility()
+                self?.launchAtLogin.refresh()
                 await self?.refreshScreenSaverIntegrationState()
             }
         }
@@ -1000,6 +1139,54 @@ final class WallpaperStore: ObservableObject {
         saveAndApply()
     }
 
+    private func migrateDuplicateLibraryVideosIfNeeded() {
+        let result = VideoLibraryLogic.deduplicatingLegacyVideos(in: settings) { video in
+            VideoContentFingerprint.sampled(at: video.url)
+        }
+        guard !result.redundantVideos.isEmpty,
+              let encodedSettings = try? encoder.encode(result.settings) else { return }
+
+        let previousSettings = settings
+        settings = result.settings
+        guard persistSharedSettings() else {
+            settings = previousSettings
+            _ = persistSharedSettings()
+            return
+        }
+        UserDefaults.standard.set(encodedSettings, forKey: defaultsKey)
+
+        let retainedPaths = Set(settings.videos.flatMap { video in
+            [video.path, video.optimizedPath].compactMap { $0 }
+        }.map { URL(fileURLWithPath: $0).standardizedFileURL.path })
+        var cleanupFailureCount = 0
+        for video in result.redundantVideos {
+            do {
+                let source = video.url.standardizedFileURL
+                if !retainedPaths.contains(source.path) {
+                    try removeFileIfPresent(
+                        at: source,
+                        ownedBy: try managedVideosDirectory()
+                    )
+                }
+                if let optimizedPath = video.optimizedPath {
+                    let optimized = URL(fileURLWithPath: optimizedPath).standardizedFileURL
+                    if !retainedPaths.contains(optimized.path) {
+                        try removeFileIfPresent(
+                            at: optimized,
+                            ownedBy: try optimizedVideosDirectory()
+                        )
+                    }
+                }
+            } catch {
+                cleanupFailureCount += 1
+            }
+        }
+        if cleanupFailureCount > 0 {
+            let suffix = cleanupFailureCount == 1 ? "" : "s"
+            errorMessage = "The shared library was repaired, but "
+                + "\(cleanupFailureCount) redundant file\(suffix) couldn’t be removed."
+        }
+    }
 }
 
 private struct LegacyWallpaperSettings: Codable {

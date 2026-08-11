@@ -28,6 +28,7 @@ struct MyWallpaperApp: App {
         Settings {
             SettingsView(store: store)
                 .frame(width: 520)
+                .frame(minHeight: 640, idealHeight: 760, maxHeight: 820)
                 .preferredColorScheme(store.appearanceMode.colorScheme)
                 .overlay { DiagonalAppearanceTransition(trigger: store.appearanceTransitionID) }
         }
@@ -113,6 +114,8 @@ private struct MenuBarMenu: View {
     }
 
     private func showMainWindow() {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.unhide(nil)
         if let window = NSApp.windows.first(where: { $0.title == "My Wallpaper" && !$0.isSheet }) {
             window.makeKeyAndOrderFront(nil)
         } else {
@@ -134,11 +137,58 @@ extension Notification.Name {
 }
 
 private final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var startedAsLoginItem = false
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        captureLoginItemLaunch()
+        if startedAsLoginItem {
+            NSApp.setActivationPolicy(.accessory)
+        }
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        captureLoginItemLaunch()
+        guard startedAsLoginItem else { return }
+
+        NSApp.setActivationPolicy(.accessory)
+        DispatchQueue.main.async {
+            NSApp.windows
+                .filter { $0.title == "My Wallpaper" && !$0.isSheet }
+                .forEach { $0.orderOut(nil) }
+            NSApp.hide(nil)
+        }
+    }
+
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows flag: Bool
+    ) -> Bool {
+        guard !flag,
+              let window = sender.windows.first(where: {
+                  $0.title == "My Wallpaper" && !$0.isSheet
+              }) else {
+            return true
+        }
+
+        sender.setActivationPolicy(.regular)
+        sender.unhide(nil)
+        window.makeKeyAndOrderFront(nil)
+        sender.activate(ignoringOtherApps: true)
+        startedAsLoginItem = false
+        return false
+    }
+
     func applicationShouldSaveSecureApplicationState(_ app: NSApplication) -> Bool {
         false
     }
 
     func applicationShouldRestoreSecureApplicationState(_ app: NSApplication) -> Bool {
         false
+    }
+
+    private func captureLoginItemLaunch() {
+        startedAsLoginItem = startedAsLoginItem || ApplicationLaunchPolicy.shouldStartHidden(
+            for: NSAppleEventManager.shared().currentAppleEvent
+        )
     }
 }

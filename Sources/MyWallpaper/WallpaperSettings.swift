@@ -81,6 +81,7 @@ struct ManagedVideo: Codable, Equatable, Identifiable {
     var optimizedPath: String?
     var optimizedProfile: VideoOptimizationProfile?
     var sourceMetadata: VideoTechnicalMetadata?
+    var contentFingerprint: String?
 
     init(
         id: String,
@@ -88,7 +89,8 @@ struct ManagedVideo: Codable, Equatable, Identifiable {
         path: String,
         optimizedPath: String? = nil,
         optimizedProfile: VideoOptimizationProfile? = nil,
-        sourceMetadata: VideoTechnicalMetadata? = nil
+        sourceMetadata: VideoTechnicalMetadata? = nil,
+        contentFingerprint: String? = nil
     ) {
         self.id = id
         self.displayName = displayName
@@ -96,6 +98,7 @@ struct ManagedVideo: Codable, Equatable, Identifiable {
         self.optimizedPath = optimizedPath
         self.optimizedProfile = optimizedProfile
         self.sourceMetadata = sourceMetadata
+        self.contentFingerprint = contentFingerprint
     }
 
     var url: URL { URL(fileURLWithPath: path) }
