@@ -6,6 +6,8 @@
 
 NSNotificationName const MWScreenSaverDisplayClaimsDidResetNotification =
     @"MWScreenSaverDisplayClaimsDidResetNotification";
+NSNotificationName const MWScreenSaverDisplayClaimWasDisplacedNotification =
+    @"MWScreenSaverDisplayClaimWasDisplacedNotification";
 
 static const NSTimeInterval MWAnimationSessionGap = 2.0;
 
@@ -25,9 +27,12 @@ static const NSTimeInterval MWAnimationSessionGap = 2.0;
 @interface MWScreenSaverDisplayResolver ()
 @property(nonatomic, copy) MWScreenSaverDisplayProvider displayProvider;
 @property(nonatomic, strong) NSMapTable<id, NSString *> *assignments;
+@property(nonatomic, strong) NSMapTable<id, NSNumber *> *animationStartOrders;
+@property(nonatomic, strong) NSHashTable<id> *attachedOwners;
 @property(nonatomic, strong) NSLock *lock;
 @property(nonatomic) NSTimeInterval lastAnimationStartTime;
 @property(nonatomic) NSUInteger animationSession;
+@property(nonatomic) NSUInteger nextAnimationStartOrder;
 @end
 
 @implementation MWScreenSaverDisplayResolver
@@ -49,6 +54,8 @@ static const NSTimeInterval MWAnimationSessionGap = 2.0;
     if (self) {
         _displayProvider = [displayProvider copy];
         _assignments = [NSMapTable weakToStrongObjectsMapTable];
+        _animationStartOrders = [NSMapTable weakToStrongObjectsMapTable];
+        _attachedOwners = [NSHashTable weakObjectsHashTable];
         _lock = [[NSLock alloc] init];
     }
     return self;
@@ -72,8 +79,15 @@ static const NSTimeInterval MWAnimationSessionGap = 2.0;
     if (self.lastAnimationStartTime == 0 || gap > MWAnimationSessionGap) {
         releasedClaims = self.assignments.count;
         [self.assignments removeAllObjects];
+        [self.animationStartOrders removeAllObjects];
+        [self.attachedOwners removeAllObjects];
         self.animationSession += 1;
         didReset = YES;
+    }
+    if (![self.animationStartOrders objectForKey:owner]) {
+        self.nextAnimationStartOrder += 1;
+        [self.animationStartOrders setObject:@(self.nextAnimationStartOrder)
+                                     forKey:owner];
     }
     self.lastAnimationStartTime = startTime;
     session = self.animationSession;
@@ -127,70 +141,111 @@ static const NSTimeInterval MWAnimationSessionGap = 2.0;
         preferredID ?: @"none",
         [candidateSummaries componentsJoinedByString:@","]);
 
+    NSString *resolvedID = nil;
+    id displacedOwner = nil;
     [self.lock lock];
     @try {
-        NSString *existingID = [self.assignments objectForKey:owner];
-        if (preferredID.length > 0 &&
-            [self displayWithID:preferredID inDisplays:displays]) {
-            id previousOwner = [self ownerAssignedToDisplayID:preferredID excludingOwner:owner];
-            if (previousOwner) {
-                [self.assignments removeObjectForKey:previousOwner];
-            }
-            [self.assignments setObject:preferredID forKey:owner];
-            os_log_with_type(MWScreenSaverDiagnosticLog(), OS_LOG_TYPE_DEFAULT,
-                "route owner=%{public}p display=%{public}@ reason=%{public}s previousOwner=%{public}p",
-                (__bridge void *)owner,
-                preferredID,
-                previousOwner ? "attached-screen-takeover" : "attached-screen",
-                (__bridge void *)previousOwner);
-            return preferredID;
-        }
-
-        MWScreenSaverDisplay *existing = [self displayWithID:existingID inDisplays:displays];
-        if (existing && [self size:existing.size matchesSize:viewSize]) {
-            os_log_with_type(MWScreenSaverDiagnosticLog(), OS_LOG_TYPE_DEFAULT,
-                "route owner=%{public}p display=%{public}@ reason=existing-claim",
-                (__bridge void *)owner,
-                existingID);
-            return existingID;
-        }
-        [self.assignments removeObjectForKey:owner];
-
-        for (MWScreenSaverDisplay *display in displays) {
-            if ([self size:display.size matchesSize:viewSize] &&
-                [self displayID:display.displayID isAvailableToOwner:owner]) {
-                [self.assignments setObject:display.displayID forKey:owner];
+        do {
+            NSString *existingID = [self.assignments objectForKey:owner];
+            if (preferredID.length > 0 &&
+                [self displayWithID:preferredID inDisplays:displays]) {
+                displacedOwner = [self ownerAssignedToDisplayID:preferredID excludingOwner:owner];
+                if (displacedOwner) {
+                    [self.assignments removeObjectForKey:displacedOwner];
+                }
+                [self.attachedOwners addObject:owner];
+                [self.assignments setObject:preferredID forKey:owner];
+                resolvedID = preferredID;
                 os_log_with_type(MWScreenSaverDiagnosticLog(), OS_LOG_TYPE_DEFAULT,
-                    "route owner=%{public}p display=%{public}@ reason=matching-dimensions",
+                    "route owner=%{public}p display=%{public}@ reason=%{public}s previousOwner=%{public}p",
                     (__bridge void *)owner,
-                    display.displayID);
-                return display.displayID;
+                    preferredID,
+                    displacedOwner ? "attached-screen-takeover" : "attached-screen",
+                    (__bridge void *)displacedOwner);
+                break;
             }
-        }
 
-        NSMutableArray<MWScreenSaverDisplay *> *available = [NSMutableArray array];
-        for (MWScreenSaverDisplay *display in displays) {
-            if ([self displayID:display.displayID isAvailableToOwner:owner]) {
-                [available addObject:display];
+            MWScreenSaverDisplay *existing = [self displayWithID:existingID inDisplays:displays];
+            if (existing && [self size:existing.size matchesSize:viewSize]) {
+                resolvedID = existingID;
+                os_log_with_type(MWScreenSaverDiagnosticLog(), OS_LOG_TYPE_DEFAULT,
+                    "route owner=%{public}p display=%{public}@ reason=existing-claim",
+                    (__bridge void *)owner,
+                    existingID);
+                break;
             }
-        }
-        if (available.count == 1) {
-            NSString *displayID = available.firstObject.displayID;
-            [self.assignments setObject:displayID forKey:owner];
-            os_log_with_type(MWScreenSaverDiagnosticLog(), OS_LOG_TYPE_DEFAULT,
-                "route owner=%{public}p display=%{public}@ reason=only-unclaimed-display",
+            [self.assignments removeObjectForKey:owner];
+
+            for (MWScreenSaverDisplay *display in displays) {
+                if ([self size:display.size matchesSize:viewSize] &&
+                    [self displayID:display.displayID isAvailableToOwner:owner]) {
+                    [self.assignments setObject:display.displayID forKey:owner];
+                    resolvedID = display.displayID;
+                    os_log_with_type(MWScreenSaverDiagnosticLog(), OS_LOG_TYPE_DEFAULT,
+                        "route owner=%{public}p display=%{public}@ reason=matching-dimensions",
+                        (__bridge void *)owner,
+                        display.displayID);
+                    break;
+                }
+            }
+            if (resolvedID) {
+                break;
+            }
+
+            NSNumber *ownerOrder = [self.animationStartOrders objectForKey:owner];
+            NSUInteger oldestOrder = NSUIntegerMax;
+            MWScreenSaverDisplay *takeoverDisplay = nil;
+            for (id existingOwner in self.assignments) {
+                if (existingOwner == owner || [self.attachedOwners containsObject:existingOwner]) {
+                    continue;
+                }
+                NSString *assignedID = [self.assignments objectForKey:existingOwner];
+                MWScreenSaverDisplay *assignedDisplay = [self displayWithID:assignedID
+                                                                  inDisplays:displays];
+                NSNumber *existingOrder = [self.animationStartOrders objectForKey:existingOwner];
+                if (!assignedDisplay || !existingOrder || !ownerOrder ||
+                    existingOrder.unsignedIntegerValue >= ownerOrder.unsignedIntegerValue ||
+                    ![self size:assignedDisplay.size matchesSize:viewSize] ||
+                    existingOrder.unsignedIntegerValue >= oldestOrder) {
+                    continue;
+                }
+                oldestOrder = existingOrder.unsignedIntegerValue;
+                takeoverDisplay = assignedDisplay;
+                displacedOwner = existingOwner;
+            }
+            if (takeoverDisplay && displacedOwner) {
+                [self.assignments removeObjectForKey:displacedOwner];
+                [self.assignments setObject:takeoverDisplay.displayID forKey:owner];
+                resolvedID = takeoverDisplay.displayID;
+                os_log_with_type(MWScreenSaverDiagnosticLog(), OS_LOG_TYPE_DEFAULT,
+                    "route owner=%{public}p display=%{public}@ reason=matching-dimensions-takeover previousOwner=%{public}p",
+                    (__bridge void *)owner,
+                    takeoverDisplay.displayID,
+                    (__bridge void *)displacedOwner);
+                break;
+            }
+
+            NSUInteger availableCount = 0;
+            for (MWScreenSaverDisplay *display in displays) {
+                if ([self displayID:display.displayID isAvailableToOwner:owner]) {
+                    availableCount += 1;
+                }
+            }
+            os_log_with_type(MWScreenSaverDiagnosticLog(), OS_LOG_TYPE_ERROR,
+                "route owner=%{public}p display=none reason=ambiguous-or-no-match available=%{public}lu",
                 (__bridge void *)owner,
-                displayID);
-            return displayID;
-        }
-        os_log_with_type(MWScreenSaverDiagnosticLog(), OS_LOG_TYPE_ERROR,
-            "route owner=%{public}p display=none reason=ambiguous-or-no-match available=%{public}lu",
-            (__bridge void *)owner,
-            (unsigned long)available.count);
-        return nil;
+                (unsigned long)availableCount);
+        } while (NO);
     } @finally {
         [self.lock unlock];
     }
+
+    if (displacedOwner) {
+        [NSNotificationCenter.defaultCenter
+            postNotificationName:MWScreenSaverDisplayClaimWasDisplacedNotification
+                          object:displacedOwner];
+    }
+    return resolvedID;
 }
 
 - (id)ownerAssignedToDisplayID:(NSString *)displayID excludingOwner:(id)owner {
@@ -210,6 +265,8 @@ static const NSTimeInterval MWAnimationSessionGap = 2.0;
     [self.lock lock];
     NSString *displayID = [self.assignments objectForKey:owner];
     [self.assignments removeObjectForKey:owner];
+    [self.animationStartOrders removeObjectForKey:owner];
+    [self.attachedOwners removeObject:owner];
     [self.lock unlock];
     os_log_with_type(MWScreenSaverDiagnosticLog(), OS_LOG_TYPE_DEFAULT,
         "release owner=%{public}p display=%{public}@",

@@ -20,6 +20,7 @@
 @property(nonatomic, weak) NSWindow *observedWindow;
 @property(nonatomic, strong) id screenObserver;
 @property(nonatomic, strong) id claimsResetObserver;
+@property(nonatomic, strong) id displacedClaimObserver;
 @property(nonatomic) NSUInteger playbackProbeGeneration;
 @end
 
@@ -46,6 +47,13 @@
                         if (notification.object != weakSelf) {
                             [weakSelf stopPlayback];
                         }
+                    }];
+        self.displacedClaimObserver = [NSNotificationCenter.defaultCenter
+            addObserverForName:MWScreenSaverDisplayClaimWasDisplacedNotification
+                        object:self
+                         queue:NSOperationQueue.mainQueue
+                    usingBlock:^(__unused NSNotification *notification) {
+                        [weakSelf stopPlayback];
                     }];
     }
     return self;
@@ -225,6 +233,9 @@
 - (void)dealloc {
     if (self.claimsResetObserver) {
         [NSNotificationCenter.defaultCenter removeObserver:self.claimsResetObserver];
+    }
+    if (self.displacedClaimObserver) {
+        [NSNotificationCenter.defaultCenter removeObserver:self.displacedClaimObserver];
     }
     [self removeScreenObserver];
     [self stopPlayback];

@@ -1,16 +1,19 @@
 #import <ScreenSaver/ScreenSaver.h>
 
+#import "ScreenSaverDisplayResolver.h"
 #import "ScreenSaverManifest.h"
 
 @interface VideoScreenSaverView : ScreenSaverView
 - (void)synchronizePlaybackForCurrentScreen;
 - (nullable MWScreenSaverManifest *)loadManifest;
 - (nullable NSString *)resolvedDisplayIDForCurrentView;
+- (void)stopPlayback;
 @end
 
 @interface TestVideoScreenSaverView : VideoScreenSaverView
 @property(nonatomic, copy, nullable) NSString *testDisplayID;
 @property(nonatomic) NSUInteger manifestLoadCount;
+@property(nonatomic) NSUInteger stopPlaybackCount;
 @end
 
 @implementation TestVideoScreenSaverView
@@ -22,6 +25,11 @@
 - (MWScreenSaverManifest *)loadManifest {
     self.manifestLoadCount += 1;
     return nil;
+}
+
+- (void)stopPlayback {
+    self.stopPlaybackCount += 1;
+    [super stopPlayback];
 }
 
 @end
@@ -46,6 +54,12 @@ int main(void) {
         [view synchronizePlaybackForCurrentScreen];
         Require(view.manifestLoadCount == 1,
                 @"Playback should resolve its manifest after a display becomes available");
+        NSUInteger stopCountBeforeDisplacement = view.stopPlaybackCount;
+        [NSNotificationCenter.defaultCenter
+            postNotificationName:MWScreenSaverDisplayClaimWasDisplacedNotification
+                          object:view];
+        Require(view.stopPlaybackCount == stopCountBeforeDisplacement + 1,
+                @"A displaced view should immediately stop any hidden playback");
         [view stopAnimation];
 
         TestVideoScreenSaverView *preview = [[TestVideoScreenSaverView alloc]

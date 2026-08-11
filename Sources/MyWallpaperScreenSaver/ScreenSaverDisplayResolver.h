@@ -3,6 +3,7 @@
 NS_ASSUME_NONNULL_BEGIN
 
 FOUNDATION_EXPORT NSNotificationName const MWScreenSaverDisplayClaimsDidResetNotification;
+FOUNDATION_EXPORT NSNotificationName const MWScreenSaverDisplayClaimWasDisplacedNotification;
 
 @interface MWScreenSaverDisplay : NSObject
 

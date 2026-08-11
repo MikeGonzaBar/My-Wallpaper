@@ -123,6 +123,46 @@ int main(void) {
                                              viewSize:NSMakeSize(100, 100)] == nil,
                 @"An unknown view must not be assigned while multiple displays are available");
 
+        MWScreenSaverDisplayResolver *delayedViewResolver = [[MWScreenSaverDisplayResolver alloc]
+            initWithDisplayProvider:^NSArray<MWScreenSaverDisplay *> *{
+                return displays;
+            }];
+        NSObject *attachedBuiltIn = [[NSObject alloc] init];
+        NSObject *placeholderExternal = [[NSObject alloc] init];
+        NSObject *wrongSizedPlaceholder = [[NSObject alloc] init];
+        NSObject *visibleExternalA = [[NSObject alloc] init];
+        NSObject *visibleExternalB = [[NSObject alloc] init];
+        [delayedViewResolver beginAnimationForOwner:attachedBuiltIn atTime:20.0];
+        Require([[delayedViewResolver displayIDForOwner:attachedBuiltIn
+                                     preferredDisplayID:@"built-in"
+                                               viewSize:NSMakeSize(1512, 982)] isEqualToString:@"built-in"],
+                @"The attached built-in view should claim its exact display");
+        [delayedViewResolver beginAnimationForOwner:placeholderExternal atTime:20.1];
+        Require([[delayedViewResolver displayIDForOwner:placeholderExternal
+                                     preferredDisplayID:nil
+                                               viewSize:NSMakeSize(3440, 1440)] isEqualToString:@"external-a"],
+                @"An early detached placeholder may provisionally claim a matching display");
+        [delayedViewResolver beginAnimationForOwner:wrongSizedPlaceholder atTime:20.2];
+        Require([delayedViewResolver displayIDForOwner:wrongSizedPlaceholder
+                                    preferredDisplayID:nil
+                                              viewSize:NSMakeSize(1512, 982)] == nil,
+                @"A detached placeholder must never claim the sole unclaimed display when its size differs");
+
+        [delayedViewResolver beginAnimationForOwner:visibleExternalA atTime:20.3];
+        Require([[delayedViewResolver displayIDForOwner:visibleExternalA
+                                     preferredDisplayID:nil
+                                               viewSize:NSMakeSize(3440, 1440)] isEqualToString:@"external-b"],
+                @"The first later external view should claim the remaining matching display");
+        [delayedViewResolver beginAnimationForOwner:visibleExternalB atTime:20.4];
+        Require([[delayedViewResolver displayIDForOwner:visibleExternalB
+                                     preferredDisplayID:nil
+                                               viewSize:NSMakeSize(3440, 1440)] isEqualToString:@"external-a"],
+                @"The second later external view should replace the oldest detached placeholder");
+        Require([delayedViewResolver displayIDForOwner:placeholderExternal
+                                    preferredDisplayID:nil
+                                              viewSize:NSMakeSize(3440, 1440)] == nil,
+                @"A displaced older placeholder must not reclaim a display from newer visible views");
+
         printf("Screen saver display resolver tests passed.\n");
     }
     return 0;
