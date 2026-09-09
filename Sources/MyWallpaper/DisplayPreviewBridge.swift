@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import SwiftUI
 
+@MainActor
 struct PlayerPreviewView: NSViewRepresentable {
     let player: AVPlayer
     let scaling: VideoScaling
