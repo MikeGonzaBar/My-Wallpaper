@@ -27,6 +27,7 @@ enum LaunchAtLoginState: Equatable {
     }
 }
 
+@MainActor
 protocol LaunchAtLoginManaging {
     var state: LaunchAtLoginState { get }
     func register() throws
@@ -34,6 +35,7 @@ protocol LaunchAtLoginManaging {
     func openSystemSettings()
 }
 
+@MainActor
 struct SystemLaunchAtLoginManager: LaunchAtLoginManaging {
     var state: LaunchAtLoginState {
         Self.state(for: SMAppService.mainApp.status)
@@ -75,7 +77,11 @@ final class LaunchAtLoginController: ObservableObject {
 
     private let manager: LaunchAtLoginManaging
 
-    init(manager: LaunchAtLoginManaging = SystemLaunchAtLoginManager()) {
+    convenience init() {
+        self.init(manager: SystemLaunchAtLoginManager())
+    }
+
+    init(manager: LaunchAtLoginManaging) {
         self.manager = manager
         state = manager.state
     }

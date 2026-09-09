@@ -2,7 +2,7 @@ import AppKit
 import CoreServices
 import Foundation
 
-struct SystemScreenSaverSelection: Equatable {
+struct SystemScreenSaverSelection: Equatable, Sendable {
     let currentName: String?
     let currentPath: String?
     let installedNames: [String]
@@ -63,7 +63,7 @@ enum SystemScreenSaverSelectionMatcher {
     }
 }
 
-enum SystemScreenSaverServiceError: LocalizedError, Equatable {
+enum SystemScreenSaverServiceError: LocalizedError, Equatable, Sendable {
     case automationNotDetermined
     case automationDenied
     case systemEventsUnavailable
@@ -92,6 +92,7 @@ protocol SystemScreenSaverSelecting {
 
 final class SystemScreenSaverService: SystemScreenSaverSelecting {
     private let applicationLauncher: WorkspaceApplicationLaunching
+    private let scriptExecutor = ScreenSaverAppleScriptExecutor()
     private let systemEventsBundleID = "com.apple.systemevents"
 
     init(applicationLauncher: WorkspaceApplicationLaunching = WorkspaceApplicationLauncher()) {
@@ -167,17 +168,7 @@ final class SystemScreenSaverService: SystemScreenSaverSelecting {
         end tell
         """
 
-        return try await Task.detached(priority: .userInitiated) {
-            guard let script = NSAppleScript(source: source) else {
-                throw SystemScreenSaverServiceError.scriptFailed
-            }
-            var error: NSDictionary?
-            let result = script.executeAndReturnError(&error)
-            guard let selection = SystemScreenSaverSelectionParser.parse(result) else {
-                throw Self.mapScriptError(error)
-            }
-            return selection
-        }.value
+        return try await scriptExecutor.querySelection(source: source)
     }
 
     static func mapScriptError(_ error: NSDictionary?) -> SystemScreenSaverServiceError {
@@ -191,4 +182,18 @@ final class SystemScreenSaverService: SystemScreenSaverSelecting {
         return .scriptFailed
     }
 
+}
+
+private actor ScreenSaverAppleScriptExecutor {
+    func querySelection(source: String) throws -> SystemScreenSaverSelection {
+        guard let script = NSAppleScript(source: source) else {
+            throw SystemScreenSaverServiceError.scriptFailed
+        }
+        var error: NSDictionary?
+        let result = script.executeAndReturnError(&error)
+        guard let selection = SystemScreenSaverSelectionParser.parse(result) else {
+            throw SystemScreenSaverService.mapScriptError(error)
+        }
+        return selection
+    }
 }

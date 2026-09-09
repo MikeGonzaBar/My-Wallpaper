@@ -155,6 +155,12 @@ struct AddFromLibrarySheet: View {
         }
         .buttonStyle(.plain)
         .disabled(isAssigned)
+        .accessibilityLabel(video.displayName)
+        .accessibilityValue(
+            isAssigned ? "Already assigned" : isSelected ? "Selected" : "Not selected"
+        )
+        .accessibilityHint(isAssigned ? "Already in this display playlist" : "Press Space to select")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     private func metadataText(for video: ManagedVideo) -> String {

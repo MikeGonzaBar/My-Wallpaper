@@ -94,8 +94,7 @@ static const NSTimeInterval MWAnimationSessionGap = 2.0;
     [self.lock unlock];
 
     os_log_with_type(MWScreenSaverDiagnosticLog(), OS_LOG_TYPE_DEFAULT,
-        "animation-session owner=%{public}p session=%{public}lu action=%{public}s releasedClaims=%{public}lu",
-        (__bridge void *)owner,
+        "animation-session session=%{public}lu action=%{public}s releasedClaims=%{public}lu",
         (unsigned long)session,
         didReset ? "reset" : "join",
         (unsigned long)releasedClaims);
@@ -128,17 +127,16 @@ static const NSTimeInterval MWAnimationSessionGap = 2.0;
     NSMutableArray<NSString *> *candidateSummaries = [NSMutableArray array];
     for (MWScreenSaverDisplay *display in displays) {
         [candidateSummaries addObject:[NSString stringWithFormat:@"%@=%.0fx%.0f",
-            display.displayID,
+            MWDiagnosticFingerprintForString(display.displayID),
             display.size.width,
             display.size.height]];
     }
     os_log_with_type(MWScreenSaverDiagnosticLog(), OS_LOG_TYPE_DEFAULT,
-        "resolve owner=%{public}p view=%{public}.0fx%{public}.0f screenAttached=%{public}s preferred=%{public}@ candidates=%{public}@",
-        (__bridge void *)owner,
+        "resolve view=%{public}.0fx%{public}.0f screenAttached=%{public}s preferred=%{public}@ candidates=%{public}@",
         viewSize.width,
         viewSize.height,
         preferredID.length > 0 ? "yes" : "no",
-        preferredID ?: @"none",
+        preferredID.length > 0 ? MWDiagnosticFingerprintForString(preferredID) : @"none",
         [candidateSummaries componentsJoinedByString:@","]);
 
     NSString *resolvedID = nil;
@@ -157,11 +155,10 @@ static const NSTimeInterval MWAnimationSessionGap = 2.0;
                 [self.assignments setObject:preferredID forKey:owner];
                 resolvedID = preferredID;
                 os_log_with_type(MWScreenSaverDiagnosticLog(), OS_LOG_TYPE_DEFAULT,
-                    "route owner=%{public}p display=%{public}@ reason=%{public}s previousOwner=%{public}p",
-                    (__bridge void *)owner,
-                    preferredID,
+                    "route display=%{public}@ reason=%{public}s displaced=%{public}s",
+                    MWDiagnosticFingerprintForString(preferredID),
                     displacedOwner ? "attached-screen-takeover" : "attached-screen",
-                    (__bridge void *)displacedOwner);
+                    displacedOwner ? "yes" : "no");
                 break;
             }
 
@@ -169,9 +166,8 @@ static const NSTimeInterval MWAnimationSessionGap = 2.0;
             if (existing && [self size:existing.size matchesSize:viewSize]) {
                 resolvedID = existingID;
                 os_log_with_type(MWScreenSaverDiagnosticLog(), OS_LOG_TYPE_DEFAULT,
-                    "route owner=%{public}p display=%{public}@ reason=existing-claim",
-                    (__bridge void *)owner,
-                    existingID);
+                    "route display=%{public}@ reason=existing-claim",
+                    MWDiagnosticFingerprintForString(existingID));
                 break;
             }
             [self.assignments removeObjectForKey:owner];
@@ -182,9 +178,8 @@ static const NSTimeInterval MWAnimationSessionGap = 2.0;
                     [self.assignments setObject:display.displayID forKey:owner];
                     resolvedID = display.displayID;
                     os_log_with_type(MWScreenSaverDiagnosticLog(), OS_LOG_TYPE_DEFAULT,
-                        "route owner=%{public}p display=%{public}@ reason=matching-dimensions",
-                        (__bridge void *)owner,
-                        display.displayID);
+                        "route display=%{public}@ reason=matching-dimensions",
+                        MWDiagnosticFingerprintForString(display.displayID));
                     break;
                 }
             }
@@ -203,7 +198,9 @@ static const NSTimeInterval MWAnimationSessionGap = 2.0;
                 MWScreenSaverDisplay *assignedDisplay = [self displayWithID:assignedID
                                                                   inDisplays:displays];
                 NSNumber *existingOrder = [self.animationStartOrders objectForKey:existingOwner];
-                if (!assignedDisplay || !existingOrder || !ownerOrder ||
+                // Retained views can reclaim on layout after a session reset without
+                // starting again. Their missing order ranks before current-session owners.
+                if (!assignedDisplay || !ownerOrder ||
                     existingOrder.unsignedIntegerValue >= ownerOrder.unsignedIntegerValue ||
                     ![self size:assignedDisplay.size matchesSize:viewSize] ||
                     existingOrder.unsignedIntegerValue >= oldestOrder) {
@@ -218,10 +215,8 @@ static const NSTimeInterval MWAnimationSessionGap = 2.0;
                 [self.assignments setObject:takeoverDisplay.displayID forKey:owner];
                 resolvedID = takeoverDisplay.displayID;
                 os_log_with_type(MWScreenSaverDiagnosticLog(), OS_LOG_TYPE_DEFAULT,
-                    "route owner=%{public}p display=%{public}@ reason=matching-dimensions-takeover previousOwner=%{public}p",
-                    (__bridge void *)owner,
-                    takeoverDisplay.displayID,
-                    (__bridge void *)displacedOwner);
+                    "route display=%{public}@ reason=matching-dimensions-takeover displaced=yes",
+                    MWDiagnosticFingerprintForString(takeoverDisplay.displayID));
                 break;
             }
 
@@ -232,8 +227,7 @@ static const NSTimeInterval MWAnimationSessionGap = 2.0;
                 }
             }
             os_log_with_type(MWScreenSaverDiagnosticLog(), OS_LOG_TYPE_ERROR,
-                "route owner=%{public}p display=none reason=ambiguous-or-no-match available=%{public}lu",
-                (__bridge void *)owner,
+                "route display=none reason=ambiguous-or-no-match available=%{public}lu",
                 (unsigned long)availableCount);
         } while (NO);
     } @finally {
@@ -269,9 +263,8 @@ static const NSTimeInterval MWAnimationSessionGap = 2.0;
     [self.attachedOwners removeObject:owner];
     [self.lock unlock];
     os_log_with_type(MWScreenSaverDiagnosticLog(), OS_LOG_TYPE_DEFAULT,
-        "release owner=%{public}p display=%{public}@",
-        (__bridge void *)owner,
-        displayID ?: @"none");
+        "release display=%{public}@",
+        displayID.length > 0 ? MWDiagnosticFingerprintForString(displayID) : @"none");
 }
 
 - (MWScreenSaverDisplay *)displayWithID:(NSString *)displayID

@@ -13,7 +13,14 @@
 @property(nonatomic, copy) NSDictionary<NSString *, NSArray<NSURL *> *> *URLsByDisplayID;
 + (nullable NSURL *)applicationSupportDirectory;
 + (nullable NSURL *)applicationSupportDirectoryForHomeDirectory:(nullable NSString *)homeDirectory;
++ (nullable NSData *)boundedDataAtURL:(NSURL *)URL;
 @end
+
+static const NSUInteger MWMaximumManifestBytes = 1024 * 1024;
+static const NSUInteger MWMaximumDisplays = 32;
+static const NSUInteger MWMaximumVideosPerDisplay = 256;
+static const NSUInteger MWMaximumIdentifierLength = 256;
+static const NSUInteger MWMaximumPathLength = 4096;
 
 @implementation MWScreenSaverManifest
 
@@ -24,7 +31,8 @@
 
 + (instancetype)loadFromApplicationSupportDirectory:(NSURL *)directory {
     NSURL *manifestURL = [directory URLByAppendingPathComponent:@"screensaver-manifest-v1.json"];
-    NSData *manifestData = [NSData dataWithContentsOfURL:manifestURL];
+    BOOL manifestExists = [[NSFileManager defaultManager] fileExistsAtPath:manifestURL.path];
+    NSData *manifestData = [self boundedDataAtURL:manifestURL];
     if (manifestData) {
         MWScreenSaverManifest *manifest =
             [self parseVersionOneManifest:[self dictionaryFromData:manifestData]];
@@ -33,6 +41,11 @@
                          "manifest source=v1 result=%{public}s",
                          manifest ? "loaded" : "invalid");
         return manifest;
+    }
+    if (manifestExists) {
+        os_log_with_type(MWScreenSaverDiagnosticLog(), OS_LOG_TYPE_ERROR,
+                         "manifest source=v1 result=unreadable-or-oversized");
+        return nil;
     }
 
     NSURL *legacyURL = [directory URLByAppendingPathComponent:@"settings.json"];
@@ -78,7 +91,11 @@
     NSMutableDictionary<NSString *, NSArray<NSURL *> *> *URLsByDisplayID =
         [NSMutableDictionary dictionary];
     NSString *firstPlayableDisplayID = nil;
-    for (id value in dictionary[@"displays"]) {
+    NSArray *displayValues = dictionary[@"displays"];
+    if (displayValues.count > MWMaximumDisplays) {
+        return nil;
+    }
+    for (id value in displayValues) {
         if (![value isKindOfClass:NSDictionary.class]) {
             continue;
         }
@@ -86,7 +103,8 @@
         NSString *displayID = display[@"displayID"];
         NSArray *paths = display[@"orderedVideoPaths"];
         if (![displayID isKindOfClass:NSString.class] || displayID.length == 0 ||
-            ![paths isKindOfClass:NSArray.class]) {
+            displayID.length > MWMaximumIdentifierLength ||
+            ![paths isKindOfClass:NSArray.class] || paths.count > MWMaximumVideosPerDisplay) {
             continue;
         }
         NSArray<NSURL *> *URLs = [self playableURLsFromPaths:paths];
@@ -123,7 +141,11 @@
     }
 
     NSMutableDictionary<NSString *, NSString *> *pathsByID = [NSMutableDictionary dictionary];
-    for (id value in settings[@"videos"]) {
+    NSArray *videoValues = settings[@"videos"];
+    if (videoValues.count > MWMaximumDisplays * MWMaximumVideosPerDisplay) {
+        return nil;
+    }
+    for (id value in videoValues) {
         if (![value isKindOfClass:NSDictionary.class]) {
             continue;
         }
@@ -139,7 +161,11 @@
     NSMutableDictionary<NSString *, NSArray<NSURL *> *> *URLsByDisplayID =
         [NSMutableDictionary dictionary];
     NSString *firstPlayableDisplayID = nil;
-    for (id value in settings[@"screens"]) {
+    NSArray *screenValues = settings[@"screens"];
+    if (screenValues.count > MWMaximumDisplays) {
+        return nil;
+    }
+    for (id value in screenValues) {
         if (![value isKindOfClass:NSDictionary.class]) {
             continue;
         }
@@ -147,7 +173,9 @@
         NSString *displayID = screen[@"screenID"];
         NSArray *videoIDs = screen[@"videoIDs"];
         if (![displayID isKindOfClass:NSString.class] || displayID.length == 0 ||
-            ![videoIDs isKindOfClass:NSArray.class]) {
+            displayID.length > MWMaximumIdentifierLength ||
+            ![videoIDs isKindOfClass:NSArray.class] ||
+            videoIDs.count > MWMaximumVideosPerDisplay) {
             continue;
         }
 
@@ -202,7 +230,7 @@
         "manifest-plan source=%{public}@ routes=%{public}lu fallback=%{public}@ muted=%{public}s scaling=%{public}@",
         source,
         (unsigned long)self.URLsByDisplayID.count,
-        self.fallbackDisplayID,
+        MWDiagnosticFingerprintForString(self.fallbackDisplayID),
         self.isMuted ? "yes" : "no",
         self.scaling);
 
@@ -214,7 +242,7 @@
         }
         os_log_with_type(MWScreenSaverDiagnosticLog(), OS_LOG_TYPE_DEFAULT,
             "manifest-route display=%{public}@ videos=%{public}lu order=%{public}@",
-            displayID,
+            MWDiagnosticFingerprintForString(displayID),
             (unsigned long)URLs.count,
             [fingerprints componentsJoinedByString:@","]);
     }
@@ -227,19 +255,48 @@
             continue;
         }
         NSString *path = value;
-        if (path.length > 0 && [[NSFileManager defaultManager] isReadableFileAtPath:path]) {
-            [URLs addObject:[NSURL fileURLWithPath:path]];
+        if (path.length == 0 || path.length > MWMaximumPathLength) {
+            continue;
+        }
+        NSURL *URL = [NSURL fileURLWithPath:path].standardizedURL;
+        NSURL *resolvedURL = URL.URLByResolvingSymlinksInPath;
+        NSNumber *isRegularFile = nil;
+        BOOL loadedType = [resolvedURL getResourceValue:&isRegularFile
+                                                 forKey:NSURLIsRegularFileKey
+                                                  error:nil];
+        if (loadedType && isRegularFile.boolValue &&
+            [[NSFileManager defaultManager] isReadableFileAtPath:resolvedURL.path]) {
+            [URLs addObject:resolvedURL];
         }
     }
     return URLs;
 }
 
 + (NSDictionary *)dictionaryAtURL:(NSURL *)URL {
-    NSData *data = [NSData dataWithContentsOfURL:URL];
+    NSData *data = [self boundedDataAtURL:URL];
     if (!data) {
         return nil;
     }
     return [self dictionaryFromData:data];
+}
+
++ (NSData *)boundedDataAtURL:(NSURL *)URL {
+    NSNumber *isRegularFile = nil;
+    NSNumber *fileSize = nil;
+    BOOL loadedType = [URL getResourceValue:&isRegularFile
+                                     forKey:NSURLIsRegularFileKey
+                                      error:nil];
+    BOOL loadedSize = [URL getResourceValue:&fileSize
+                                     forKey:NSURLFileSizeKey
+                                      error:nil];
+    if (!loadedType || !isRegularFile.boolValue || !loadedSize ||
+        fileSize.unsignedLongLongValue > MWMaximumManifestBytes) {
+        return nil;
+    }
+    NSData *data = [NSData dataWithContentsOfURL:URL
+                                        options:NSDataReadingMappedIfSafe
+                                          error:nil];
+    return data.length <= MWMaximumManifestBytes ? data : nil;
 }
 
 + (NSDictionary *)dictionaryFromData:(NSData *)data {

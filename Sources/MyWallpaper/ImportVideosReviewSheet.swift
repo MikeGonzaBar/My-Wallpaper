@@ -9,6 +9,7 @@ struct ImportVideosReviewSheet: View {
     let onDismiss: () -> Void
 
     @State private var createPerformanceCopies: Bool
+    @State private var importTask: Task<Void, Never>?
 
     init(
         store: WallpaperStore,
@@ -97,7 +98,7 @@ struct ImportVideosReviewSheet: View {
                                 action: { createPerformanceCopies.toggle() }
                             )
                             .disabled(performanceCopiesAreRequired || importableCandidates.isEmpty)
-                            Text(store.settings.optimizationProfile.rawValue.uppercased())
+                            Text(store.settings.optimizationProfile.title.uppercased())
                                 .font(RetroFont.label(size: 9))
                             Text(performanceCopiesAreRequired
                                  ? "REQUIRED WHILE PERFORMANCE MODE IS ACTIVE."
@@ -130,18 +131,27 @@ struct ImportVideosReviewSheet: View {
                 }
 
                 HStack {
-                    Button("CANCEL", action: onDismiss)
+                    Button(store.isImporting ? "CANCEL IMPORT" : "CANCEL") {
+                        if store.isImporting {
+                            importTask?.cancel()
+                        } else {
+                            onDismiss()
+                        }
+                    }
                         .buttonStyle(RetroButtonStyle())
                     Spacer()
                     Button("ADD MORE FILES…") {
                         onChooseMore()
                     }
                     .buttonStyle(RetroButtonStyle())
+                    .disabled(store.isImporting)
                     Button(importButtonTitle) {
-                        Task {
+                        importTask = Task {
+                            defer { importTask = nil }
                             let imported = importableCandidates.isEmpty
                                 ? []
                                 : await store.importVideosToLibrary(candidates: candidates)
+                            guard !Task.isCancelled else { return }
                             guard imported.count == importableCandidates.count else { return }
                             if !imported.isEmpty,
                                createPerformanceCopies,
@@ -168,6 +178,11 @@ struct ImportVideosReviewSheet: View {
         .background(RetroPalette.paper)
         .foregroundStyle(RetroPalette.ink)
         .environment(\.font, RetroFont.body())
+        .interactiveDismissDisabled(store.isImporting)
+        .onDisappear {
+            importTask?.cancel()
+            importTask = nil
+        }
     }
 
     private var importButtonTitle: String {
@@ -207,6 +222,9 @@ struct ImportVideosReviewSheet: View {
         .padding(.horizontal, 10)
         .frame(minHeight: 72)
         .opacity(candidate.isDuplicate ? 0.65 : 1)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(candidate.displayName)
+        .accessibilityValue("\(metadataText(for: candidate)), \(statusText(for: candidate))")
     }
 
     private func metadataText(for candidate: VideoImportCandidate) -> String {

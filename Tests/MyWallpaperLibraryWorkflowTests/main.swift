@@ -7,6 +7,63 @@ private func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
     }
 }
 
+let stableSettings = WallpaperSettings(
+    screens: [ScreenConfiguration(
+        screenID: "display",
+        screenName: "Display",
+        mode: .playlist
+    )],
+    scaling: .fit,
+    playbackQuality: .performance,
+    optimizationProfile: .maximum
+)
+let stableSettingsObject = try! JSONSerialization.jsonObject(
+    with: JSONEncoder().encode(stableSettings)
+) as! [String: Any]
+expect(stableSettingsObject["scaling"] as? String == "fit", "scaling should encode a stable token")
+expect(
+    stableSettingsObject["playbackQuality"] as? String == "performance",
+    "playback quality should encode a stable token"
+)
+let stableScreens = stableSettingsObject["screens"] as! [[String: Any]]
+expect(stableScreens[0]["mode"] as? String == "playlist", "playback mode should encode a stable token")
+
+let legacySettingsJSON = #"{"videos":[],"screens":[{"screenID":"display","screenName":"Display","mode":"Single video","videoIDs":[],"stashedPlaylistVideoIDs":[]}],"isMuted":true,"scaling":"Fit to screen","playbackQuality":"Original quality","optimizationProfile":"1440p / 60 FPS"}"#
+let decodedLegacySettings = try! JSONDecoder().decode(
+    WallpaperSettings.self,
+    from: Data(legacySettingsJSON.utf8)
+)
+expect(
+    decodedLegacySettings.scaling == .fit
+        && decodedLegacySettings.playbackQuality == .original
+        && decodedLegacySettings.optimizationProfile == .efficient
+        && decodedLegacySettings.screens[0].mode == .single,
+    "legacy presentation values should remain decodable"
+)
+let unknownSettingsJSON = #"{"schemaVersion":1,"videos":[],"screens":[],"isMuted":true,"scaling":"stretch"}"#
+expect(
+    (try? JSONDecoder().decode(
+        WallpaperSettings.self,
+        from: Data(unknownSettingsJSON.utf8)
+    )) == nil,
+    "unknown persisted values should fail closed"
+)
+
+let unassignedVideo = ManagedVideo(
+    id: "unassigned",
+    displayName: "Unassigned",
+    path: "/video.mp4"
+)
+let modernUnassigned = WallpaperSettingsMigration.assigningLegacyVideoIfNeeded(
+    in: WallpaperSettings(videos: [unassignedVideo]),
+    displays: [DisplayInfo(id: "display", name: "Display")],
+    decodedFromLegacyFormat: false
+)
+expect(
+    modernUnassigned.screens.isEmpty,
+    "modern library-only settings must not be mistaken for a legacy display migration"
+)
+
 let existingVideo = ManagedVideo(
     id: "existing",
     displayName: "Mountain Drive 4K",
@@ -44,8 +101,8 @@ let fallbackReferences = VideoLibraryLogic.duplicateReferences(
     )]
 )
 expect(
-    fallbackReferences == [.library(videoID: "legacy-without-fingerprint")],
-    "filename matching should remain a safe fallback when content cannot be fingerprinted"
+    fallbackReferences == [nil],
+    "a matching filename must not suppress an import when content cannot be fingerprinted"
 )
 
 let newImportedVideo = ManagedVideo(
@@ -176,7 +233,8 @@ let fingerprints = [
 ]
 let deduplicated = VideoLibraryLogic.deduplicatingLegacyVideos(
     in: duplicateSettings,
-    fingerprint: { fingerprints[$0.id] }
+    sampledFingerprint: { fingerprints[$0.id] },
+    fullFingerprint: { fingerprints[$0.id] }
 )
 expect(
     deduplicated.settings.videos.map(\.id) == [
@@ -202,7 +260,8 @@ expect(
 expect(
     VideoLibraryLogic.deduplicatingLegacyVideos(
         in: deduplicated.settings,
-        fingerprint: { fingerprints[$0.id] }
+        sampledFingerprint: { fingerprints[$0.id] },
+        fullFingerprint: { fingerprints[$0.id] }
     ).redundantVideos.isEmpty,
     "the legacy deduplication migration should be idempotent"
 )
@@ -215,9 +274,19 @@ let differentlyNamedSettings = WallpaperSettings(videos: [duplicateOne, renamedC
 expect(
     VideoLibraryLogic.deduplicatingLegacyVideos(
         in: differentlyNamedSettings,
-        fingerprint: { _ in "matching-content" }
+        sampledFingerprint: { _ in "matching-content" },
+        fullFingerprint: { _ in "matching-content" }
     ).settings.videos.count == 2,
     "matching content with different user-visible names should remain separate"
+)
+let sampledCollision = VideoLibraryLogic.deduplicatingLegacyVideos(
+    in: WallpaperSettings(videos: [duplicateOne, duplicateTwo]),
+    sampledFingerprint: { _ in "same-sampled-layout" },
+    fullFingerprint: { $0.id }
+)
+expect(
+    sampledCollision.redundantVideos.isEmpty && sampledCollision.settings.videos.count == 2,
+    "a sampled fingerprint collision must not cause destructive deduplication"
 )
 
 let fingerprintDirectory = FileManager.default.temporaryDirectory
@@ -230,16 +299,41 @@ defer { try? FileManager.default.removeItem(at: fingerprintDirectory) }
 let firstFingerprintURL = fingerprintDirectory.appendingPathComponent("first.mp4")
 let copiedFingerprintURL = fingerprintDirectory.appendingPathComponent("copy.mp4")
 let differentFingerprintURL = fingerprintDirectory.appendingPathComponent("different.mp4")
+let sampledCollisionOneURL = fingerprintDirectory.appendingPathComponent("sample-collision-one.mp4")
+let sampledCollisionTwoURL = fingerprintDirectory.appendingPathComponent("sample-collision-two.mp4")
 let sampleData = Data(repeating: 0x41, count: 2_500_000)
 try! sampleData.write(to: firstFingerprintURL)
 try! sampleData.write(to: copiedFingerprintURL)
 try! Data(repeating: 0x42, count: sampleData.count).write(to: differentFingerprintURL)
+let collisionSize = 6 * 1_048_576
+let collisionOneData = Data(repeating: 0x31, count: collisionSize)
+var collisionTwoData = collisionOneData
+collisionTwoData.replaceSubrange(
+    1_310_720..<1_572_864,
+    with: Data(repeating: 0x32, count: 262_144)
+)
+try! collisionOneData.write(to: sampledCollisionOneURL)
+try! collisionTwoData.write(to: sampledCollisionTwoURL)
 let firstFingerprint = VideoContentFingerprint.sampled(at: firstFingerprintURL)
 let copiedFingerprint = VideoContentFingerprint.sampled(at: copiedFingerprintURL)
 let differentFingerprint = VideoContentFingerprint.sampled(at: differentFingerprintURL)
 expect(
     firstFingerprint == copiedFingerprint,
     "identical file copies should have the same sampled content fingerprint"
+)
+expect(
+    VideoContentFingerprint.sampled(at: sampledCollisionOneURL)
+        == VideoContentFingerprint.sampled(at: sampledCollisionTwoURL)
+        && VideoContentFingerprint.full(at: sampledCollisionOneURL)
+            != VideoContentFingerprint.full(at: sampledCollisionTwoURL),
+    "full hashing should distinguish files whose differences fall outside every sampled region"
+)
+expect(
+    VideoContentFingerprint.full(at: firstFingerprintURL)
+        == VideoContentFingerprint.full(at: copiedFingerprintURL)
+        && VideoContentFingerprint.full(at: firstFingerprintURL)
+            != VideoContentFingerprint.full(at: differentFingerprintURL),
+    "full streaming fingerprints should confirm exact content before destructive deduplication"
 )
 expect(
     firstFingerprint != differentFingerprint,

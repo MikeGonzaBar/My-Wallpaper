@@ -18,6 +18,7 @@ struct ScreenSaverManifest: Codable, Equatable {
     static let currentSchemaVersion = 1
 
     let schemaVersion: Int
+    let configurationGeneration: UUID
     let isMuted: Bool
     let scaling: ScreenSaverScaling
     let fallbackDisplayID: String
@@ -68,6 +69,7 @@ enum ScreenSaverManifestBuilder {
 
         return ScreenSaverManifest(
             schemaVersion: ScreenSaverManifest.currentSchemaVersion,
+            configurationGeneration: settings.configurationGeneration,
             isMuted: settings.isMuted,
             scaling: ScreenSaverScaling(settings.scaling),
             fallbackDisplayID: fallback.displayID,

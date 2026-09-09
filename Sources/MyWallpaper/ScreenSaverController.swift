@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 
 @MainActor
 final class FullScreenPreviewController {
@@ -8,13 +9,13 @@ final class FullScreenPreviewController {
     private var scaling = VideoScaling.fill
     private var playbackWindows: [NSWindow] = []
     private var playbackViews: [PlaylistPlayerView] = []
-    private var globalInputMonitor: Any?
     private var localInputMonitor: Any?
     private var inputArmingTask: Task<Void, Never>?
     private var countdownTask: Task<Void, Never>?
-    private var applicationObservers: [NSObjectProtocol] = []
-    private var workspaceObservers: [NSObjectProtocol] = []
+    private var applicationCancellables: Set<AnyCancellable> = []
+    private var workspaceCancellables: Set<AnyCancellable> = []
     private var cursorIsHidden = false
+    private var dismissalPolicy = FullScreenPreviewDismissalPolicy()
     private let activityAssertion: PreviewActivityAsserting
 
     var onError: ((String) -> Void)?
@@ -24,41 +25,49 @@ final class FullScreenPreviewController {
     init(activityAssertion: PreviewActivityAsserting = PreviewActivityAssertion()) {
         self.activityAssertion = activityAssertion
         let center = NotificationCenter.default
-        applicationObservers.append(center.addObserver(
-            forName: NSApplication.willTerminateNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.dismiss() }
-        })
-        applicationObservers.append(center.addObserver(
-            forName: NSApplication.didChangeScreenParametersNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard self?.isPresenting == true else { return }
-                self?.dismiss()
-                self?.onError?("Displays changed. Start Preview All Displays again.")
+        center.publisher(for: NSApplication.willTerminateNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated { self?.dismiss() }
             }
-        })
+            .store(in: &applicationCancellables)
+        center.publisher(for: NSApplication.didChangeScreenParametersNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated {
+                guard self?.isPresenting == true else { return }
+                self?.dismissIfRequired(for: .displayConfigurationChanged)
+                self?.onError?("Displays changed. Start Preview All Displays again.")
+                }
+            }
+            .store(in: &applicationCancellables)
+        center.publisher(for: NSApplication.didResignActiveNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.dismissIfRequired(for: .applicationResignedActive)
+                }
+            }
+            .store(in: &applicationCancellables)
 
         let workspaceCenter = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.willSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
-            workspaceObservers.append(workspaceCenter.addObserver(
-                forName: name,
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
-                MainActor.assumeIsolated { self?.dismiss() }
-            })
+            workspaceCenter.publisher(for: name)
+                .receive(on: RunLoop.main)
+                .sink { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        let event: FullScreenPreviewDismissalEvent = name == NSWorkspace.willSleepNotification
+                            ? .systemWillSleep
+                            : .sessionResigned
+                        self?.dismissIfRequired(for: event)
+                    }
+                }
+                .store(in: &workspaceCancellables)
         }
     }
 
     deinit {
         MainActor.assumeIsolated { dismiss() }
-        applicationObservers.forEach(NotificationCenter.default.removeObserver)
-        workspaceObservers.forEach(NSWorkspace.shared.notificationCenter.removeObserver)
     }
 
     func configure(
@@ -121,6 +130,7 @@ final class FullScreenPreviewController {
 
         playbackWindows = pendingWindows
         playbackViews = pendingViews
+        dismissalPolicy.activate()
         playbackWindows.forEach { $0.orderFrontRegardless() }
         playbackViews.forEach { $0.play() }
         NSApp.activate(ignoringOtherApps: true)
@@ -131,6 +141,7 @@ final class FullScreenPreviewController {
         inputArmingTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(4))
             guard !Task.isCancelled else { return }
+            self?.dismissalPolicy.armInput()
             self?.armInputMonitors()
             self?.inputArmingTask = nil
         }
@@ -141,7 +152,7 @@ final class FullScreenPreviewController {
                 try? await Task.sleep(for: .seconds(1))
             }
             guard !Task.isCancelled else { return }
-            self?.dismiss()
+            self?.dismissIfRequired(for: .timeout)
         }
         return true
     }
@@ -153,10 +164,6 @@ final class FullScreenPreviewController {
         countdownTask?.cancel()
         countdownTask = nil
 
-        if let globalInputMonitor {
-            NSEvent.removeMonitor(globalInputMonitor)
-            self.globalInputMonitor = nil
-        }
         if let localInputMonitor {
             NSEvent.removeMonitor(localInputMonitor)
             self.localInputMonitor = nil
@@ -166,6 +173,7 @@ final class FullScreenPreviewController {
         playbackWindows.forEach { $0.orderOut(nil) }
         playbackViews.removeAll()
         playbackWindows.removeAll()
+        dismissalPolicy.deactivate()
         activityAssertion.release()
         if cursorIsHidden {
             NSCursor.unhide()
@@ -177,17 +185,21 @@ final class FullScreenPreviewController {
     }
 
     private func armInputMonitors() {
-        guard isPresenting, globalInputMonitor == nil, localInputMonitor == nil else { return }
+        guard isPresenting, localInputMonitor == nil else { return }
         let exitEvents: NSEvent.EventTypeMask = [
             .mouseMoved, .leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown, .scrollWheel
         ]
-        globalInputMonitor = NSEvent.addGlobalMonitorForEvents(matching: exitEvents) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.dismiss() }
-        }
         localInputMonitor = NSEvent.addLocalMonitorForEvents(matching: exitEvents) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.dismiss() }
+            Task { @MainActor [weak self] in
+                self?.dismissIfRequired(for: .localInput)
+            }
             return nil
         }
+    }
+
+    private func dismissIfRequired(for event: FullScreenPreviewDismissalEvent) {
+        guard dismissalPolicy.shouldDismiss(for: event) else { return }
+        dismiss()
     }
 }
 

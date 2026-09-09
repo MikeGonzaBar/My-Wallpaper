@@ -24,6 +24,11 @@ int main(void) {
         Require([first rangeOfString:@"secret"].location == NSNotFound,
                 @"Fingerprints must not expose filenames or paths");
 
+        NSString *display = MWDiagnosticFingerprintForString(@"private-display-identifier");
+        Require(display.length == 12, @"Generic diagnostic fingerprints should be compact");
+        Require([display rangeOfString:@"display"].location == NSNotFound,
+                @"Generic diagnostic fingerprints must redact their source value");
+
         printf("Screen saver diagnostics tests passed.\n");
     }
     return 0;

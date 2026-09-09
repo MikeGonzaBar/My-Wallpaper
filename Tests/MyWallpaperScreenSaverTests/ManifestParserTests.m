@@ -157,6 +157,144 @@ static void TestMalformedManifestFailsClosed(void) {
     RemoveDirectory(directory);
 }
 
+static void TestOversizedManifestFailsClosed(void) {
+    NSURL *directory = MakeDirectory();
+    NSURL *URL = [directory URLByAppendingPathComponent:@"screensaver-manifest-v1.json"];
+    NSMutableData *oversized = [NSMutableData dataWithLength:1024 * 1024 + 1];
+    Require([oversized writeToURL:URL atomically:YES], @"Could not write oversized fixture");
+    NSURL *video = MakeVideo(directory, @"legacy.mp4");
+    WriteJSON(@{
+        @"isMuted": @YES,
+        @"scaling": @"fill",
+        @"videos": @[@{@"id": @"legacy", @"path": video.path}],
+        @"screens": @[@{
+            @"screenID": @"display",
+            @"mode": @"Single video",
+            @"videoIDs": @[@"legacy"],
+            @"startVideoID": @"legacy"
+        }]
+    }, [directory URLByAppendingPathComponent:@"settings.json"]);
+    Require([MWScreenSaverManifest loadFromApplicationSupportDirectory:directory] == nil,
+            @"Oversized v1 manifests should fail closed without loading legacy settings");
+    RemoveDirectory(directory);
+}
+
+static void TestNonRegularVideoPathIsRejected(void) {
+    NSURL *directory = MakeDirectory();
+    NSDictionary *manifest = @{
+        @"schemaVersion": @1,
+        @"isMuted": @YES,
+        @"scaling": @"fill",
+        @"fallbackDisplayID": @"display",
+        @"displays": @[
+            @{@"displayID": @"display", @"orderedVideoPaths": @[directory.path]}
+        ]
+    };
+    WriteJSON(manifest, [directory URLByAppendingPathComponent:@"screensaver-manifest-v1.json"]);
+    Require([MWScreenSaverManifest loadFromApplicationSupportDirectory:directory] == nil,
+            @"Directories and other non-regular paths must not become player items");
+    RemoveDirectory(directory);
+}
+
+static void TestSymlinkVideoPathUsesValidatedDestination(void) {
+    NSURL *directory = MakeDirectory();
+    NSURL *video = MakeVideo(directory, @"video.mp4");
+    NSURL *link = [directory URLByAppendingPathComponent:@"video-link.mp4"];
+    Require([[NSFileManager defaultManager] createSymbolicLinkAtURL:link
+                                                withDestinationURL:video
+                                                               error:nil],
+            @"Could not create symlink fixture");
+    NSDictionary *manifest = @{
+        @"schemaVersion": @1,
+        @"isMuted": @YES,
+        @"scaling": @"fill",
+        @"fallbackDisplayID": @"display",
+        @"displays": @[
+            @{@"displayID": @"display", @"orderedVideoPaths": @[link.path]}
+        ]
+    };
+    WriteJSON(manifest, [directory URLByAppendingPathComponent:@"screensaver-manifest-v1.json"]);
+
+    MWScreenSaverManifest *parsed =
+        [MWScreenSaverManifest loadFromApplicationSupportDirectory:directory];
+    Require([[parsed videoURLsForDisplayID:@"display" preview:NO]
+        isEqualToArray:@[video]], @"Playback must use the exact path that was validated");
+    RemoveDirectory(directory);
+}
+
+static NSDictionary *VersionOneManifest(NSString *displayID, NSArray<NSString *> *paths) {
+    return @{
+        @"schemaVersion": @1,
+        @"isMuted": @YES,
+        @"scaling": @"fill",
+        @"fallbackDisplayID": displayID,
+        @"displays": @[@{ @"displayID": displayID, @"orderedVideoPaths": paths }]
+    };
+}
+
+static void TestManifestCollectionLimitsFailClosed(void) {
+    NSURL *directory = MakeDirectory();
+    NSURL *video = MakeVideo(directory, @"video.mp4");
+    NSMutableArray *tooManyDisplays = [NSMutableArray array];
+    for (NSUInteger index = 0; index < 33; index++) {
+        [tooManyDisplays addObject:@{
+            @"displayID": [NSString stringWithFormat:@"display-%lu", (unsigned long)index],
+            @"orderedVideoPaths": @[video.path]
+        }];
+    }
+    NSDictionary *displayOverflow = @{
+        @"schemaVersion": @1,
+        @"isMuted": @YES,
+        @"scaling": @"fill",
+        @"fallbackDisplayID": @"display-0",
+        @"displays": tooManyDisplays
+    };
+    WriteJSON(displayOverflow, [directory URLByAppendingPathComponent:@"screensaver-manifest-v1.json"]);
+    Require([MWScreenSaverManifest loadFromApplicationSupportDirectory:directory] == nil,
+            @"Manifests over the display limit must fail closed");
+
+    NSMutableArray *tooManyPaths = [NSMutableArray array];
+    for (NSUInteger index = 0; index < 257; index++) {
+        [tooManyPaths addObject:video.path];
+    }
+    WriteJSON(VersionOneManifest(@"display", tooManyPaths),
+              [directory URLByAppendingPathComponent:@"screensaver-manifest-v1.json"]);
+    Require([MWScreenSaverManifest loadFromApplicationSupportDirectory:directory] == nil,
+            @"Manifests over the per-display video limit must fail closed");
+    RemoveDirectory(directory);
+}
+
+static void TestManifestIdentifierAndPathLimitsExcludeUnsafeEntries(void) {
+    NSURL *directory = MakeDirectory();
+    NSURL *video = MakeVideo(directory, @"video.mp4");
+    NSString *longIdentifier = [@"x" stringByPaddingToLength:257 withString:@"x" startingAtIndex:0];
+    WriteJSON(VersionOneManifest(longIdentifier, @[video.path]),
+              [directory URLByAppendingPathComponent:@"screensaver-manifest-v1.json"]);
+    Require([MWScreenSaverManifest loadFromApplicationSupportDirectory:directory] == nil,
+            @"Overlong display identifiers must not create a playback route");
+
+    NSString *longPath = [@"/" stringByPaddingToLength:4097 withString:@"x" startingAtIndex:0];
+    WriteJSON(VersionOneManifest(@"display", @[longPath]),
+              [directory URLByAppendingPathComponent:@"screensaver-manifest-v1.json"]);
+    Require([MWScreenSaverManifest loadFromApplicationSupportDirectory:directory] == nil,
+            @"Overlong video paths must not create a player item");
+    RemoveDirectory(directory);
+}
+
+static void TestBrokenSymlinkIsRejected(void) {
+    NSURL *directory = MakeDirectory();
+    NSURL *link = [directory URLByAppendingPathComponent:@"missing-link.mp4"];
+    Require([[NSFileManager defaultManager] createSymbolicLinkAtURL:link
+                                                withDestinationURL:[directory URLByAppendingPathComponent:@"missing.mp4"]
+                                                               error:nil],
+            @"Could not create broken symlink fixture");
+    WriteJSON(VersionOneManifest(@"display", @[link.path]),
+              [directory URLByAppendingPathComponent:@"screensaver-manifest-v1.json"]);
+    Require([MWScreenSaverManifest loadFromApplicationSupportDirectory:directory] == nil,
+            @"Broken symlinks must not become player items");
+    RemoveDirectory(directory);
+}
+
 static void TestLegacyFallback(void) {
     NSURL *directory = MakeDirectory();
     NSURL *one = MakeVideo(directory, @"one.mp4");
@@ -199,6 +337,12 @@ int main(void) {
         TestInvalidManifestTypesFailClosed();
         TestInvalidVersionDoesNotUseLegacyFallback();
         TestMalformedManifestFailsClosed();
+        TestOversizedManifestFailsClosed();
+        TestNonRegularVideoPathIsRejected();
+        TestSymlinkVideoPathUsesValidatedDestination();
+        TestManifestCollectionLimitsFailClosed();
+        TestManifestIdentifierAndPathLimitsExcludeUnsafeEntries();
+        TestBrokenSymlinkIsRejected();
         TestLegacyFallback();
         TestApplicationSupportPathUsesAccountHome();
         printf("Screen saver manifest parser tests passed.\n");

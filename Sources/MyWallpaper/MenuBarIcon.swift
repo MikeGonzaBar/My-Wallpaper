@@ -1,6 +1,7 @@
 import AppKit
 import CoreImage
 
+@MainActor
 enum MenuBarIcon {
     static let image: NSImage? = {
         guard

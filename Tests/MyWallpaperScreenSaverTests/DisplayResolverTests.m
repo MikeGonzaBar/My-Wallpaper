@@ -22,6 +22,61 @@ static MWScreenSaverDisplay *Display(NSString *displayID, CGFloat width, CGFloat
                      size:NSMakeSize(width, height)];
 }
 
+static void TestReclaimedDisplaysAfterSessionReset(NSArray<MWScreenSaverDisplay *> *displays) {
+    MWScreenSaverDisplayResolver *resolver = [[MWScreenSaverDisplayResolver alloc]
+        initWithDisplayProvider:^NSArray<MWScreenSaverDisplay *> *{ return displays; }];
+    NSObject *builtIn = [[NSObject alloc] init];
+    NSArray<NSObject *> *staleViews = @[[NSObject new], [NSObject new]];
+    NSArray<NSObject *> *visibleViews = @[[NSObject new], [NSObject new]];
+    NSSize externalSize = NSMakeSize(3440, 1440);
+    [resolver beginAnimationForOwner:builtIn atTime:10.0];
+    for (NSObject *view in staleViews) {
+        [resolver beginAnimationForOwner:view atTime:10.1];
+        Require([resolver displayIDForOwner:view screen:nil viewSize:externalSize] != nil,
+                @"The previous session should claim both external displays");
+    }
+
+    [resolver beginAnimationForOwner:builtIn atTime:20.0];
+    Require([[resolver displayIDForOwner:builtIn preferredDisplayID:@"built-in"
+                               viewSize:NSMakeSize(1512, 982)] isEqualToString:@"built-in"],
+            @"The new session should preserve the attached built-in display");
+    // Retained views receive layout callbacks without starting in the new session.
+    for (NSObject *view in staleViews) {
+        Require([resolver displayIDForOwner:view screen:nil viewSize:externalSize] != nil,
+                @"Retained views can provisionally reclaim displays after a reset");
+    }
+    __block NSUInteger displacementCount = 0;
+    id observer = [NSNotificationCenter.defaultCenter
+        addObserverForName:MWScreenSaverDisplayClaimWasDisplacedNotification object:nil queue:nil
+        usingBlock:^(NSNotification *notification) {
+            Require([staleViews containsObject:notification.object],
+                    @"Only stale external owners should be displaced");
+            displacementCount += 1;
+        }];
+    NSMutableSet<NSString *> *assignedIDs = [NSMutableSet set];
+    for (NSObject *view in visibleViews) {
+        [resolver beginAnimationForOwner:view atTime:20.5];
+        NSString *displayID = [resolver displayIDForOwner:view screen:nil viewSize:externalSize];
+        Require(displayID != nil, @"New external views must replace claims without a session start order");
+        [assignedIDs addObject:displayID];
+    }
+    Require([assignedIDs isEqualToSet:[NSSet setWithArray:@[@"external-a", @"external-b"]]],
+            @"Both visible external views must receive distinct external displays");
+    Require(displacementCount == 2, @"Both stale players must receive a displacement notification");
+    for (NSObject *view in staleViews) {
+        Require([resolver displayIDForOwner:view screen:nil viewSize:externalSize] == nil,
+                @"A stale layout callback must not steal back a visible display");
+        Require([resolver displayIDForOwner:view screen:nil viewSize:NSMakeSize(1512, 982)] == nil,
+                @"A stale view must not displace the attached built-in view");
+        [resolver releaseDisplayForOwner:view];
+    }
+    for (NSObject *view in visibleViews) {
+        Require([assignedIDs containsObject:[resolver displayIDForOwner:view screen:nil viewSize:externalSize]],
+                @"Stopping stale views must preserve the replacement claims");
+    }
+    [NSNotificationCenter.defaultCenter removeObserver:observer];
+}
+
 int main(void) {
     @autoreleasepool {
         NSArray<MWScreenSaverDisplay *> *displays = @[
@@ -163,6 +218,7 @@ int main(void) {
                                               viewSize:NSMakeSize(3440, 1440)] == nil,
                 @"A displaced older placeholder must not reclaim a display from newer visible views");
 
+        TestReclaimedDisplaysAfterSessionReset(displays);
         printf("Screen saver display resolver tests passed.\n");
     }
     return 0;

@@ -1,5 +1,40 @@
-import AppKit
-import AVFoundation
+@preconcurrency import AppKit
+@preconcurrency import AVFoundation
+import Combine
+
+struct RollingPlaylistState: Equatable {
+    private let orderedURLs: [URL]
+    private(set) var failedURLs: Set<URL> = []
+    private var nextIndex = 0
+
+    init(orderedURLs: [URL]) {
+        self.orderedURLs = orderedURLs
+    }
+
+    var targetBufferedItemCount: Int {
+        min(2, Set(orderedURLs).subtracting(failedURLs).count)
+    }
+
+    var hasPlayableURL: Bool {
+        orderedURLs.contains { !failedURLs.contains($0) }
+    }
+
+    mutating func markFailed(_ url: URL) {
+        failedURLs.insert(url)
+    }
+
+    mutating func nextPlayableURL() -> URL? {
+        guard hasPlayableURL else { return nil }
+        for _ in orderedURLs.indices {
+            let url = orderedURLs[nextIndex]
+            nextIndex = (nextIndex + 1) % orderedURLs.count
+            if !failedURLs.contains(url) {
+                return url
+            }
+        }
+        return nil
+    }
+}
 
 @MainActor
 final class PlaylistPlayerView: NSView {
@@ -7,12 +42,10 @@ final class PlaylistPlayerView: NSView {
     private let playerLayer = AVPlayerLayer()
     private let exitButton = NSButton()
     private let countdownLabel = NSTextField(labelWithString: "")
-    private let orderedURLs: [URL]
     private let onExit: () -> Void
-    private var nextLoopIndex = 0
-    private var ownedItems: Set<ObjectIdentifier> = []
-    private var endObserver: NSObjectProtocol?
-    private var failureObserver: NSObjectProtocol?
+    private var playlistState: RollingPlaylistState
+    private var ownedItems: [ObjectIdentifier: URL] = [:]
+    private var playbackCancellables: Set<AnyCancellable> = []
 
     init(
         videoURLs: [URL],
@@ -20,7 +53,7 @@ final class PlaylistPlayerView: NSView {
         scaling: VideoScaling,
         onExit: @escaping () -> Void
     ) {
-        orderedURLs = videoURLs
+        playlistState = RollingPlaylistState(orderedURLs: videoURLs)
         self.onExit = onExit
         super.init(frame: .zero)
 
@@ -30,7 +63,7 @@ final class PlaylistPlayerView: NSView {
         playerLayer.videoGravity = scaling == .fill ? .resizeAspectFill : .resizeAspect
         layer?.addSublayer(playerLayer)
         player.isMuted = isMuted
-        orderedURLs.forEach(enqueue)
+        fillPlaybackQueue()
 
         exitButton.title = "EXIT PREVIEW"
         exitButton.bezelStyle = .rounded
@@ -48,24 +81,28 @@ final class PlaylistPlayerView: NSView {
         addSubview(countdownLabel)
 
         let center = NotificationCenter.default
-        endObserver = center.addObserver(
-            forName: .AVPlayerItemDidPlayToEndTime,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            MainActor.assumeIsolated {
-                self?.requeueIfOwned(notification.object as? AVPlayerItem)
+        center.publisher(for: .AVPlayerItemDidPlayToEndTime)
+            .compactMap { notification in
+                (notification.object as? AVPlayerItem).map(ObjectIdentifier.init)
             }
-        }
-        failureObserver = center.addObserver(
-            forName: .AVPlayerItemFailedToPlayToEndTime,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            MainActor.assumeIsolated {
-                self?.discardIfOwned(notification.object as? AVPlayerItem)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] itemID in
+                MainActor.assumeIsolated {
+                    self?.requeueIfOwned(itemID)
+                }
             }
-        }
+            .store(in: &playbackCancellables)
+        center.publisher(for: .AVPlayerItemFailedToPlayToEndTime)
+            .compactMap { notification in
+                (notification.object as? AVPlayerItem).map(ObjectIdentifier.init)
+            }
+            .receive(on: RunLoop.main)
+            .sink { [weak self] itemID in
+                MainActor.assumeIsolated {
+                    self?.discardIfOwned(itemID)
+                }
+            }
+            .store(in: &playbackCancellables)
     }
 
     @available(*, unavailable)
@@ -101,15 +138,7 @@ final class PlaylistPlayerView: NSView {
     func stop() {
         player.pause()
         player.removeAllItems()
-        let center = NotificationCenter.default
-        if let endObserver {
-            center.removeObserver(endObserver)
-            self.endObserver = nil
-        }
-        if let failureObserver {
-            center.removeObserver(failureObserver)
-            self.failureObserver = nil
-        }
+        playbackCancellables.removeAll()
         ownedItems.removeAll()
     }
 
@@ -119,19 +148,29 @@ final class PlaylistPlayerView: NSView {
 
     private func enqueue(_ url: URL) {
         let item = AVPlayerItem(url: url)
-        ownedItems.insert(ObjectIdentifier(item))
+        ownedItems[ObjectIdentifier(item)] = url
         player.insert(item, after: nil)
     }
 
-    private func requeueIfOwned(_ endedItem: AVPlayerItem?) {
-        guard let endedItem, !orderedURLs.isEmpty,
-              ownedItems.remove(ObjectIdentifier(endedItem)) != nil else { return }
-        enqueue(orderedURLs[nextLoopIndex])
-        nextLoopIndex = (nextLoopIndex + 1) % orderedURLs.count
+    private func requeueIfOwned(_ itemID: ObjectIdentifier) {
+        guard ownedItems.removeValue(forKey: itemID) != nil else { return }
+        fillPlaybackQueue()
     }
 
-    private func discardIfOwned(_ failedItem: AVPlayerItem?) {
-        guard let failedItem else { return }
-        ownedItems.remove(ObjectIdentifier(failedItem))
+    private func discardIfOwned(_ itemID: ObjectIdentifier) {
+        guard let failedURL = ownedItems.removeValue(forKey: itemID) else { return }
+        playlistState.markFailed(failedURL)
+        if playlistState.hasPlayableURL {
+            fillPlaybackQueue()
+        } else {
+            player.pause()
+        }
+    }
+
+    private func fillPlaybackQueue() {
+        while ownedItems.count < playlistState.targetBufferedItemCount,
+              let url = playlistState.nextPlayableURL() {
+            enqueue(url)
+        }
     }
 }

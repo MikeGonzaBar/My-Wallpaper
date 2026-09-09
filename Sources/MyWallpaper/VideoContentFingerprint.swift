@@ -2,11 +2,12 @@ import CryptoKit
 import Foundation
 
 enum VideoContentFingerprint {
-    private static let versionPrefix = "sampled-sha256-v1:"
+    private static let sampledVersionPrefix = "sampled-sha256-v1:"
+    private static let fullVersionPrefix = "full-sha256-v1:"
     private static let sampleSize = 1_048_576
 
     static func isCurrent(_ fingerprint: String) -> Bool {
-        fingerprint.hasPrefix(versionPrefix)
+        fingerprint.hasPrefix(sampledVersionPrefix)
     }
 
     static func sampled(at url: URL) -> String? {
@@ -44,6 +45,22 @@ enum VideoContentFingerprint {
             return nil
         }
         let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
-        return versionPrefix + digest
+        return sampledVersionPrefix + digest
+    }
+
+    static func full(at url: URL) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+
+        var hasher = SHA256()
+        do {
+            while let data = try handle.read(upToCount: sampleSize), !data.isEmpty {
+                hasher.update(data: data)
+            }
+        } catch {
+            return nil
+        }
+        let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        return fullVersionPrefix + digest
     }
 }

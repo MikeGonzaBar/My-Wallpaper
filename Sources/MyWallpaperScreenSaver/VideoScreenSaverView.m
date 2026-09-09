@@ -5,6 +5,20 @@
 #import "ScreenSaverDiagnostics.h"
 #import "ScreenSaverManifest.h"
 
+static NSString *MWViewFingerprint(id view) {
+    if (!view) {
+        return @"unavailable";
+    }
+    return MWDiagnosticFingerprintForString(
+        [NSString stringWithFormat:@"%p", (__bridge void *)view]);
+}
+
+static NSString *MWDisplayFingerprint(NSString *displayID) {
+    return displayID.length > 0
+        ? MWDiagnosticFingerprintForString(displayID)
+        : @"none";
+}
+
 @interface VideoScreenSaverView : ScreenSaverView
 @property(nonatomic, strong) AVQueuePlayer *player;
 @property(nonatomic, strong) AVPlayerLayer *playerLayer;
@@ -22,6 +36,7 @@
 @property(nonatomic, strong) id claimsResetObserver;
 @property(nonatomic, strong) id displacedClaimObserver;
 @property(nonatomic) NSUInteger playbackProbeGeneration;
+@property(nonatomic, copy) NSString *diagnosticOwnerFingerprint;
 @end
 
 @implementation VideoScreenSaverView
@@ -29,12 +44,15 @@
 - (instancetype)initWithFrame:(NSRect)frame isPreview:(BOOL)isPreview {
     self = [super initWithFrame:frame isPreview:isPreview];
     if (self) {
+        self.diagnosticOwnerFingerprint = MWViewFingerprint(self);
         self.wantsLayer = YES;
         self.layer.backgroundColor = NSColor.blackColor.CGColor;
-        self.animationTimeInterval = 1.0 / 30.0;
+        // AVPlayerLayer drives video frames. Keep ScreenSaverView's otherwise-unused
+        // animation callback dormant to avoid continuous timer wakeups.
+        self.animationTimeInterval = 60.0;
         os_log_with_type(MWScreenSaverDiagnosticLog(), OS_LOG_TYPE_DEFAULT,
-            "view-init owner=%{public}p preview=%{public}s frame=%{public}.0fx%{public}.0f",
-            (__bridge void *)self,
+            "view-init owner=%{public}@ preview=%{public}s frame=%{public}.0fx%{public}.0f",
+            self.diagnosticOwnerFingerprint,
             isPreview ? "yes" : "no",
             frame.size.width,
             frame.size.height);
@@ -63,8 +81,8 @@
     [super startAnimation];
     [[MWScreenSaverDisplayResolver sharedResolver] beginAnimationForOwner:self];
     os_log_with_type(MWScreenSaverDiagnosticLog(), OS_LOG_TYPE_DEFAULT,
-        "view-start owner=%{public}p preview=%{public}s bounds=%{public}.0fx%{public}.0f window=%{public}s screen=%{public}s",
-        (__bridge void *)self,
+        "view-start owner=%{public}@ preview=%{public}s bounds=%{public}.0fx%{public}.0f window=%{public}s screen=%{public}s",
+        self.diagnosticOwnerFingerprint,
         self.isPreview ? "yes" : "no",
         self.bounds.size.width,
         self.bounds.size.height,
@@ -77,9 +95,9 @@
 
 - (void)stopAnimation {
     os_log_with_type(MWScreenSaverDiagnosticLog(), OS_LOG_TYPE_DEFAULT,
-        "view-stop owner=%{public}p display=%{public}@",
-        (__bridge void *)self,
-        self.activeDisplayID ?: @"none");
+        "view-stop owner=%{public}@ display=%{public}@",
+        self.diagnosticOwnerFingerprint,
+        MWDisplayFingerprint(self.activeDisplayID));
     [self removeScreenObserver];
     [self stopPlayback];
     [[MWScreenSaverDisplayResolver sharedResolver] releaseDisplayForOwner:self];
@@ -106,8 +124,8 @@
             // display to the manifest fallback.
             [self stopPlayback];
             os_log_with_type(MWScreenSaverDiagnosticLog(), OS_LOG_TYPE_ERROR,
-                "playback-wait owner=%{public}p reason=display-unresolved bounds=%{public}.0fx%{public}.0f",
-                (__bridge void *)self,
+                "playback-wait owner=%{public}@ reason=display-unresolved bounds=%{public}.0fx%{public}.0f",
+                self.diagnosticOwnerFingerprint,
                 self.bounds.size.width,
                 self.bounds.size.height);
             return;
@@ -122,9 +140,9 @@
     MWScreenSaverManifest *manifest = [self loadManifest];
     if (!manifest) {
         os_log_with_type(MWScreenSaverDiagnosticLog(), OS_LOG_TYPE_ERROR,
-            "playback-abort owner=%{public}p display=%{public}@ reason=manifest-unavailable",
-            (__bridge void *)self,
-            displayID);
+            "playback-abort owner=%{public}@ display=%{public}@ reason=manifest-unavailable",
+            self.diagnosticOwnerFingerprint,
+            MWDisplayFingerprint(displayID));
         return;
     }
     NSArray<NSURL *> *URLs = [manifest
@@ -132,9 +150,9 @@
                        preview:self.isPreview];
     if (URLs.count == 0) {
         os_log_with_type(MWScreenSaverDiagnosticLog(), OS_LOG_TYPE_ERROR,
-            "playback-abort owner=%{public}p display=%{public}@ reason=no-playable-videos",
-            (__bridge void *)self,
-            displayID);
+            "playback-abort owner=%{public}@ display=%{public}@ reason=no-playable-videos",
+            self.diagnosticOwnerFingerprint,
+            MWDisplayFingerprint(displayID));
         return;
     }
 
@@ -143,9 +161,9 @@
         [fingerprints addObject:MWVideoFingerprint(URL)];
     }
     os_log_with_type(MWScreenSaverDiagnosticLog(), OS_LOG_TYPE_DEFAULT,
-        "playback-plan owner=%{public}p display=%{public}@ videos=%{public}lu order=%{public}@ muted=%{public}s scaling=%{public}@",
-        (__bridge void *)self,
-        displayID,
+        "playback-plan owner=%{public}@ display=%{public}@ videos=%{public}lu order=%{public}@ muted=%{public}s scaling=%{public}@",
+        self.diagnosticOwnerFingerprint,
+        MWDisplayFingerprint(displayID),
         (unsigned long)URLs.count,
         [fingerprints componentsJoinedByString:@","],
         manifest.isMuted ? "yes" : "no",
@@ -159,9 +177,7 @@
     self.loggedPlayingURLs = [NSMutableSet set];
     self.player = [[AVQueuePlayer alloc] init];
     self.player.muted = manifest.isMuted;
-    for (NSURL *URL in URLs) {
-        [self enqueueURL:URL];
-    }
+    [self fillPlaybackQueue];
 
     self.playerLayer = [AVPlayerLayer playerLayerWithPlayer:self.player];
     self.playerLayer.videoGravity = [manifest.scaling isEqualToString:@"fit"]
@@ -195,10 +211,10 @@
                 }];
     [self.player play];
     os_log_with_type(MWScreenSaverDiagnosticLog(), OS_LOG_TYPE_DEFAULT,
-        "playback-start-requested owner=%{public}p display=%{public}@ queued=%{public}lu",
-        (__bridge void *)self,
-        displayID,
-        (unsigned long)URLs.count);
+        "playback-start-requested owner=%{public}@ display=%{public}@ queued=%{public}lu",
+        self.diagnosticOwnerFingerprint,
+        MWDisplayFingerprint(displayID),
+        (unsigned long)self.ownedItems.count);
     [self schedulePlaybackProbeAfter:2.0 label:@"2s"];
     [self schedulePlaybackProbeAfter:8.0 label:@"8s"];
 }
@@ -217,8 +233,8 @@
 - (void)layout {
     [super layout];
     os_log_with_type(MWScreenSaverDiagnosticLog(), OS_LOG_TYPE_DEFAULT,
-        "view-layout owner=%{public}p bounds=%{public}.0fx%{public}.0f player=%{public}s window=%{public}s screen=%{public}s",
-        (__bridge void *)self,
+        "view-layout owner=%{public}@ bounds=%{public}.0fx%{public}.0f player=%{public}s window=%{public}s screen=%{public}s",
+        self.diagnosticOwnerFingerprint,
         self.bounds.size.width,
         self.bounds.size.height,
         self.player ? "yes" : "no",
@@ -320,9 +336,9 @@
         double videoBitRate = accessEvent ? accessEvent.averageVideoBitrate : -1;
         os_log_with_type(MWScreenSaverDiagnosticLog(),
                          error ? OS_LOG_TYPE_ERROR : OS_LOG_TYPE_DEFAULT,
-            "playback-probe owner=%{public}p display=%{public}@ after=%{public}@ playerStatus=%{public}ld itemStatus=%{public}ld rate=%{public}.2f dropped=%{public}ld stalls=%{public}ld startup=%{public}.3f bitrate=%{public}.0f errorDomain=%{public}@ errorCode=%{public}ld",
-            (__bridge void *)strongSelf,
-            strongSelf.activeDisplayID ?: @"none",
+            "playback-probe owner=%{public}@ display=%{public}@ after=%{public}@ playerStatus=%{public}ld itemStatus=%{public}ld rate=%{public}.2f dropped=%{public}ld stalls=%{public}ld startup=%{public}.3f bitrate=%{public}.0f errorDomain=%{public}@ errorCode=%{public}ld",
+            strongSelf.diagnosticOwnerFingerprint,
+            MWDisplayFingerprint(strongSelf.activeDisplayID),
             label,
             (long)strongSelf.player.timeControlStatus,
             (long)item.status,
@@ -341,10 +357,7 @@
     if (![self removeOwnedItem:endedItem]) {
         return;
     }
-    NSURL *nextURL = [self nextPlayableLoopURL];
-    if (nextURL) {
-        [self enqueueURL:nextURL];
-    }
+    [self fillPlaybackQueue];
 }
 
 - (void)playerItemDidFail:(id)object {
@@ -356,13 +369,22 @@
         NSURL *URL = ((AVURLAsset *)failedItem.asset).URL;
         [self.failedURLs addObject:URL];
         os_log_with_type(MWScreenSaverDiagnosticLog(), OS_LOG_TYPE_ERROR,
-            "playback-failed owner=%{public}p display=%{public}@ video=%{public}@",
-            (__bridge void *)self,
-            self.activeDisplayID ?: @"none",
+            "playback-failed owner=%{public}@ display=%{public}@ video=%{public}@",
+            self.diagnosticOwnerFingerprint,
+            MWDisplayFingerprint(self.activeDisplayID),
             MWVideoFingerprint(URL));
     }
-    if (self.failedURLs.count >= self.orderedURLs.count) {
+    BOOL hasPlayableURL = NO;
+    for (NSURL *URL in self.orderedURLs) {
+        if (![self.failedURLs containsObject:URL]) {
+            hasPlayableURL = YES;
+            break;
+        }
+    }
+    if (!hasPlayableURL) {
         [self.player pause];
+    } else {
+        [self fillPlaybackQueue];
     }
 }
 
@@ -380,9 +402,9 @@
     }
     [self.loggedPlayingURLs addObject:URL];
     os_log_with_type(MWScreenSaverDiagnosticLog(), OS_LOG_TYPE_DEFAULT,
-        "playback-active owner=%{public}p display=%{public}@ video=%{public}@",
-        (__bridge void *)self,
-        self.activeDisplayID ?: @"none",
+        "playback-active owner=%{public}@ display=%{public}@ video=%{public}@",
+        self.diagnosticOwnerFingerprint,
+        MWDisplayFingerprint(self.activeDisplayID),
         MWVideoFingerprint(URL));
 }
 
@@ -410,6 +432,23 @@
         }
     }
     return nil;
+}
+
+- (void)fillPlaybackQueue {
+    NSUInteger playableURLCount = 0;
+    for (NSURL *URL in [NSSet setWithArray:self.orderedURLs]) {
+        if (![self.failedURLs containsObject:URL]) {
+            playableURLCount += 1;
+        }
+    }
+    NSUInteger targetCount = MIN((NSUInteger)2, playableURLCount);
+    while (self.ownedItems.count < targetCount) {
+        NSURL *nextURL = [self nextPlayableLoopURL];
+        if (!nextURL) {
+            break;
+        }
+        [self enqueueURL:nextURL];
+    }
 }
 
 - (void)enqueueURL:(NSURL *)URL {

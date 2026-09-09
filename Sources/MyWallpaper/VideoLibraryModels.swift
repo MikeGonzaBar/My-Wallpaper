@@ -61,18 +61,14 @@ enum VideoLibraryLogic {
         }
 
         var existingIDByFingerprint: [String: String] = [:]
-        var existingIDByName: [String: String] = [:]
         for video in existingVideos {
             if let fingerprint = video.contentFingerprint {
                 existingIDByFingerprint[fingerprint] = existingIDByFingerprint[fingerprint]
                     ?? video.id
             }
-            let name = normalizedName(video.displayName)
-            existingIDByName[name] = existingIDByName[name] ?? video.id
         }
 
         var firstCandidateIDByFingerprint: [String: UUID] = [:]
-        var firstCandidateIDByName: [String: UUID] = [:]
         return names.indices.map { index in
             let candidateID = candidateIDs[index]
             if let fingerprint = fingerprints[index] {
@@ -85,15 +81,8 @@ enum VideoLibraryLogic {
                 firstCandidateIDByFingerprint[fingerprint] = candidateID
                 return nil
             }
-
-            let name = normalizedName(names[index])
-            if let videoID = existingIDByName[name] {
-                return .library(videoID: videoID)
-            }
-            if let firstCandidateID = firstCandidateIDByName[name] {
-                return .selection(candidateID: firstCandidateID)
-            }
-            firstCandidateIDByName[name] = candidateID
+            // A filename is presentation metadata, not proof of identity. If hashing
+            // fails, preserve the candidate instead of suppressing distinct content.
             return nil
         }
     }
@@ -145,31 +134,43 @@ enum VideoLibraryLogic {
 
     static func deduplicatingLegacyVideos(
         in settings: WallpaperSettings,
-        fingerprint: (ManagedVideo) -> String?
+        sampledFingerprint: (ManagedVideo) -> String?,
+        fullFingerprint: (ManagedVideo) -> String?
     ) -> VideoLibraryDeduplicationResult {
         let nameCounts = Dictionary(
             grouping: settings.videos,
             by: { normalizedName($0.displayName) }
         ).mapValues(\.count)
-        var canonicalIDByFingerprint: [String: String] = [:]
+        var sampledFingerprintsByVideoID: [String: String] = [:]
+        var sampleGroupCounts: [String: Int] = [:]
+        for video in settings.videos {
+            let normalizedDisplayName = normalizedName(video.displayName)
+            guard nameCounts[normalizedDisplayName, default: 0] > 1,
+                  let sampledFingerprint = sampledFingerprint(video) else { continue }
+            let sampleKey = normalizedDisplayName + "\u{1F}" + sampledFingerprint
+            sampledFingerprintsByVideoID[video.id] = sampleKey
+            sampleGroupCounts[sampleKey, default: 0] += 1
+        }
+
+        var canonicalIDByFullFingerprint: [String: String] = [:]
         var replacementIDs: [String: String] = [:]
         var retainedVideos: [ManagedVideo] = []
         var redundantVideos: [ManagedVideo] = []
 
         for video in settings.videos {
-            let normalizedDisplayName = normalizedName(video.displayName)
-            guard nameCounts[normalizedDisplayName, default: 0] > 1,
-                  let contentFingerprint = fingerprint(video) else {
+            guard let sampleKey = sampledFingerprintsByVideoID[video.id],
+                  sampleGroupCounts[sampleKey, default: 0] > 1,
+                  let fullFingerprint = fullFingerprint(video) else {
                 retainedVideos.append(video)
                 continue
             }
 
-            let key = normalizedDisplayName + "\u{1F}" + contentFingerprint
-            if let canonicalID = canonicalIDByFingerprint[key] {
+            let key = sampleKey + "\u{1F}" + fullFingerprint
+            if let canonicalID = canonicalIDByFullFingerprint[key] {
                 replacementIDs[video.id] = canonicalID
                 redundantVideos.append(video)
             } else {
-                canonicalIDByFingerprint[key] = video.id
+                canonicalIDByFullFingerprint[key] = video.id
                 retainedVideos.append(video)
             }
         }

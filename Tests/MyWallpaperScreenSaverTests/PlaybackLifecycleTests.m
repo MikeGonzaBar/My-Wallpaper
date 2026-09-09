@@ -1,13 +1,20 @@
+#import <AVFoundation/AVFoundation.h>
 #import <ScreenSaver/ScreenSaver.h>
 
 #import "ScreenSaverDisplayResolver.h"
 #import "ScreenSaverManifest.h"
 
 @interface VideoScreenSaverView : ScreenSaverView
+@property(nonatomic, strong) AVQueuePlayer *player;
+@property(nonatomic, copy) NSArray<NSURL *> *orderedURLs;
+@property(nonatomic, strong) NSMutableSet<NSValue *> *ownedItems;
+@property(nonatomic, strong) NSMutableSet<NSURL *> *failedURLs;
+@property(nonatomic) NSUInteger nextLoopIndex;
 - (void)synchronizePlaybackForCurrentScreen;
 - (nullable MWScreenSaverManifest *)loadManifest;
 - (nullable NSString *)resolvedDisplayIDForCurrentView;
 - (void)stopPlayback;
+- (void)fillPlaybackQueue;
 @end
 
 @interface TestVideoScreenSaverView : VideoScreenSaverView
@@ -46,6 +53,8 @@ int main(void) {
         TestVideoScreenSaverView *view = [[TestVideoScreenSaverView alloc]
             initWithFrame:NSMakeRect(0, 0, 800, 600)
                 isPreview:NO];
+        Require(view.animationTimeInterval >= 1.0,
+                @"AVPlayerLayer playback should not drive a high-frequency saver timer");
         [view startAnimation];
         Require(view.manifestLoadCount == 0,
                 @"Full-screen playback should wait until its display is known");
@@ -69,6 +78,24 @@ int main(void) {
         Require(preview.manifestLoadCount == 1,
                 @"System Settings preview should use the fallback without a display window");
         [preview stopAnimation];
+
+        VideoScreenSaverView *rollingView = [[VideoScreenSaverView alloc]
+            initWithFrame:NSMakeRect(0, 0, 320, 180)
+                isPreview:NO];
+        NSURL *one = [NSURL fileURLWithPath:@"/one.mp4"];
+        NSURL *two = [NSURL fileURLWithPath:@"/two.mp4"];
+        NSURL *three = [NSURL fileURLWithPath:@"/three.mp4"];
+        rollingView.player = [[AVQueuePlayer alloc] init];
+        rollingView.orderedURLs = @[one, two, three];
+        rollingView.ownedItems = [NSMutableSet set];
+        rollingView.failedURLs = [NSMutableSet setWithObject:two];
+        [rollingView fillPlaybackQueue];
+        Require(rollingView.player.items.count == 2,
+                @"Saver playback should retain only two AVPlayerItems");
+        NSArray<NSURL *> *queuedURLs = [rollingView.player.items valueForKeyPath:@"asset.URL"];
+        Require([queuedURLs isEqualToArray:@[one, three]],
+                @"Saver playback should skip failed URLs when filling its rolling queue");
+        [rollingView stopPlayback];
         printf("Screen saver playback lifecycle tests passed.\n");
     }
     return 0;

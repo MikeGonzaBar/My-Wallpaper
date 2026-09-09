@@ -20,27 +20,35 @@ final class WallpaperStore: ObservableObject {
 
     private let nativeScreenSaver = NativeScreenSaverController()
     private let previewController = FullScreenPreviewController()
+    private let systemActions = MacSystemActions()
     private let videoOptimizer: VideoOptimizing
+    private let videoFiles = ManagedVideoFileStore()
+
+    private var videoImporter: VideoLibraryImporter {
+        VideoLibraryImporter(videoOptimizer: videoOptimizer, videoFiles: videoFiles)
+    }
 
     private var previewLooper: AVPlayerLooper?
     private var previewScreenID: String?
     private var displayChangeCancellable: AnyCancellable?
     private var applicationActiveCancellable: AnyCancellable?
     private var applicationInactiveCancellables: Set<AnyCancellable> = []
-    private var windowStateCancellables: Set<AnyCancellable> = []
     private var screenSaverEngineCancellables: Set<AnyCancellable> = []
     private var inlinePreviewPolicy = InlinePreviewPlaybackPolicy(
         applicationIsActive: NSApp.isActive,
-        windowIsVisible: true,
+        windowIsVisible: false,
         displaysPageIsVisible: false,
         competingPlaybackIsActive: false
     )
     private var optimizationTask: Task<Void, Never>?
+    private var activeOptimizationID: UUID?
     private var optimizationRestartRequested = false
     private var optimizationShouldResumeAfterPlayback = false
-    private var isOptimizationSuspendedForPlayback = false
+    private var playbackSuspensionReasons: Set<PlaybackSuspensionReason> = []
     private var integrationRefreshGeneration = 0
     private var isFinalizingScreenSaverUpdate = false
+    private var isInitializing = true
+    private var lastPersistedSettings: WallpaperSettings?
     private let defaultsKey = "wallpaperSettings"
     private let appearanceModeKey = "appearanceMode"
     private let verificationAttemptedKey = "screenSaverVerificationAttempted"
@@ -56,11 +64,13 @@ final class WallpaperStore: ObservableObject {
         appearanceMode = AppearanceMode(
             rawValue: UserDefaults.standard.string(forKey: appearanceModeKey) ?? ""
         ) ?? .automatic
-        let savedData = UserDefaults.standard.data(forKey: defaultsKey)
-        if let savedData, let saved = try? decoder.decode(WallpaperSettings.self, from: savedData) {
-            settings = saved
-        } else if let savedData,
-                  let legacy = try? decoder.decode(LegacyWallpaperSettings.self, from: savedData),
+        let loadResult = WallpaperSettingsLoader.loadInitialSettings(
+            decoder: decoder,
+            defaultsKey: defaultsKey
+        )
+        if let saved = loadResult.settings {
+            settings = saved.repaired()
+        } else if let legacy = loadResult.legacySettings,
                   let path = legacy.videoPath,
                   FileManager.default.fileExists(atPath: path) {
             let migratedVideo = ManagedVideo(
@@ -76,22 +86,33 @@ final class WallpaperStore: ObservableObject {
         } else {
             settings = WallpaperSettings()
         }
+        lastPersistedSettings = settings
 
-        removeOrphanedOptimizedFiles()
+        if loadResult.allowsDestructiveCleanup {
+            videoFiles.removeOrphanedOptimizedFiles(
+                retaining: Set(settings.videos.compactMap(\.optimizedPath))
+            )
+        }
         refreshScreens()
-        migrateLegacyVideoToScreensIfNeeded()
-        migrateDuplicateLibraryVideosIfNeeded()
-        persistSharedSettings()
+        migrateLegacyVideoToScreensIfNeeded(
+            decodedFromLegacyFormat: loadResult.legacySettings != nil
+        )
+        Task { await migrateDuplicateLibraryVideosIfNeeded() }
+        if loadResult.allowsAutomaticPersistence {
+            saveAndApply()
+        }
         applySettings()
         observeDisplayChanges()
         observeApplicationActivation()
-        observeMainWindowVisibility()
         observeScreenSaverEngineLifecycle()
         previewController.onError = { [weak self] message in
             self?.errorMessage = message
         }
+        systemActions.onError = { [weak self] message in
+            self?.errorMessage = message
+        }
         previewController.onDismiss = { [weak self] in
-            self?.resumeOptimizationAfterPlayback()
+            self?.resumeOptimizationAfterPlayback(reason: .preview)
         }
         Task { await refreshScreenSaverIntegrationState() }
         Task { await refreshVideoMetadata() }
@@ -99,6 +120,10 @@ final class WallpaperStore: ObservableObject {
         if settings.playbackQuality == .performance {
             optimizeExistingVideos()
         }
+        if loadResult.hadUnrecoverableData {
+            errorMessage = "Your saved settings could not be read. Existing files were preserved; no cleanup was performed."
+        }
+        isInitializing = false
     }
 
     var statusText: String {
@@ -127,6 +152,7 @@ final class WallpaperStore: ObservableObject {
     var isScreenSaverReady: Bool { screenSaverIntegrationState.isReady }
 
     func refreshScreens() {
+        let previousSettings = settings
         let connectedScreens = NSScreen.screens.map {
             DisplayInfo(id: DisplayIdentifier.stableID(for: $0), name: $0.localizedName)
         }
@@ -141,8 +167,11 @@ final class WallpaperStore: ObservableObject {
             self.previewScreenID = connectedScreens.first?.id
             refreshPreview()
         }
-        persistSharedSettings()
-        applySettings()
+        if settings != previousSettings, !isInitializing {
+            saveAndApply()
+        } else {
+            applySettings()
+        }
     }
 
     func configuration(for screenID: String) -> ScreenConfiguration {
@@ -172,46 +201,20 @@ final class WallpaperStore: ObservableObject {
 
     func setDisplaysPageVisible(_ isVisible: Bool) {
         inlinePreviewPolicy.displaysPageIsVisible = isVisible
-        if isVisible {
-            refreshMainWindowVisibility()
-        } else {
-            updateInlinePreviewPlayback()
-        }
+        updateInlinePreviewPlayback()
+    }
+
+    func setMainWindowVisible(_ isVisible: Bool) {
+        inlinePreviewPolicy.windowIsVisible = isVisible
+        updateInlinePreviewPlayback()
     }
 
     func prepareVideoImports(from sourceURLs: [URL]) async -> [VideoImportCandidate] {
         await refreshVideoFingerprints()
-        let candidateIDs = sourceURLs.map { _ in UUID() }
-        let names = sourceURLs.map { $0.deletingPathExtension().lastPathComponent }
-        var fileSizes: [Int64] = []
-        var metadataValues: [VideoTechnicalMetadata?] = []
-        var fingerprints: [String?] = []
-
-        for sourceURL in sourceURLs {
-            let hasAccess = sourceURL.startAccessingSecurityScopedResource()
-            let attributes = try? FileManager.default.attributesOfItem(atPath: sourceURL.path)
-            fileSizes.append((attributes?[.size] as? NSNumber)?.int64Value ?? 0)
-            metadataValues.append(try? await videoOptimizer.metadata(for: sourceURL))
-            fingerprints.append(await contentFingerprint(for: sourceURL))
-            if hasAccess { sourceURL.stopAccessingSecurityScopedResource() }
-        }
-        let duplicateReferences = VideoLibraryLogic.duplicateReferences(
-            candidateIDs: candidateIDs,
-            for: names,
-            fingerprints: fingerprints,
+        return await videoImporter.prepareCandidates(
+            from: sourceURLs,
             existingVideos: settings.videos
         )
-        return sourceURLs.indices.map { index in
-            VideoImportCandidate(
-                id: candidateIDs[index],
-                sourceURL: sourceURLs[index],
-                displayName: names[index],
-                fileSize: fileSizes[index],
-                metadata: metadataValues[index],
-                contentFingerprint: fingerprints[index],
-                duplicate: duplicateReferences[index]
-            )
-        }
     }
 
     func importVideosToLibrary(
@@ -223,47 +226,21 @@ final class WallpaperStore: ObservableObject {
         errorMessage = nil
         defer { isImporting = false }
 
-        var imported: [ManagedVideo] = []
-        var copiedURLs: [URL] = []
         do {
-            let directory = try managedVideosDirectory()
-            for candidate in importable {
-                let sourceURL = candidate.sourceURL
-                let hasAccess = sourceURL.startAccessingSecurityScopedResource()
-                defer {
-                    if hasAccess { sourceURL.stopAccessingSecurityScopedResource() }
-                }
-
-                let id = UUID().uuidString
-                let destination = directory.appendingPathComponent(id)
-                    .appendingPathExtension(sourceURL.pathExtension.lowercased())
-                try FileManager.default.copyItem(at: sourceURL, to: destination)
-                copiedURLs.append(destination)
-                let metadata: VideoTechnicalMetadata?
-                if let candidateMetadata = candidate.metadata {
-                    metadata = candidateMetadata
-                } else {
-                    metadata = try? await videoOptimizer.metadata(for: destination)
-                }
-                imported.append(ManagedVideo(
-                    id: id,
-                    displayName: candidate.displayName,
-                    path: destination.path,
-                    sourceMetadata: metadata,
-                    contentFingerprint: candidate.contentFingerprint
-                ))
-            }
-
+            let imported = try await videoImporter.importVideos(candidates: importable)
+            try Task.checkCancellation()
             settings.videos.append(contentsOf: imported)
-            saveAndApply()
+            guard saveAndApply() else {
+                videoImporter.removeManagedFiles(for: imported)
+                return []
+            }
             if settings.playbackQuality == .performance {
                 optimizeExistingVideos()
             }
             return imported
+        } catch is CancellationError {
+            return []
         } catch {
-            for url in copiedURLs {
-                try? FileManager.default.removeItem(at: url)
-            }
             errorMessage = "The video couldn’t be imported: \(error.localizedDescription)"
             return []
         }
@@ -302,33 +279,29 @@ final class WallpaperStore: ObservableObject {
             return false
         }
         let video = settings.videos[index]
-        do {
-            try deleteManagedFiles(for: video)
-        } catch {
-            errorMessage = "The video couldn’t be deleted: \(error.localizedDescription)"
-            return false
-        }
         settings.videos.remove(at: index)
-        saveAndApply()
+        guard saveAndApply() else { return false }
+        do {
+            try videoFiles.deleteManagedFiles(for: video)
+        } catch {
+            errorMessage = "The video was removed from the library, but its managed file couldn’t be deleted: \(error.localizedDescription)"
+        }
         return true
     }
 
     func removeUnusedLibraryVideos() {
         let unused = settings.videos.filter { usageCount(for: $0.id) == 0 }
         guard !unused.isEmpty else { return }
-        var deletedIDs = Set<String>()
+        let deletedIDs = Set(unused.map(\.id))
+        settings.videos.removeAll { deletedIDs.contains($0.id) }
+        guard saveAndApply() else { return }
         var failureCount = 0
         for video in unused {
             do {
-                try deleteManagedFiles(for: video)
-                deletedIDs.insert(video.id)
+                try videoFiles.deleteManagedFiles(for: video)
             } catch {
                 failureCount += 1
             }
-        }
-        if !deletedIDs.isEmpty {
-            settings.videos.removeAll { deletedIDs.contains($0.id) }
-            saveAndApply()
         }
         if failureCount > 0 {
             errorMessage = "\(failureCount) video\(failureCount == 1 ? "" : "s") couldn’t be deleted."
@@ -388,7 +361,10 @@ final class WallpaperStore: ObservableObject {
     func setPlaybackQuality(_ quality: VideoPlaybackQuality) {
         guard settings.playbackQuality != quality else { return }
         settings.playbackQuality = quality
-        saveAndApply()
+        guard saveAndApply() else {
+            refreshPreview()
+            return
+        }
         refreshPreview()
         if quality == .performance {
             optimizeExistingVideos()
@@ -400,16 +376,20 @@ final class WallpaperStore: ObservableObject {
     func setOptimizationProfile(_ profile: VideoOptimizationProfile) {
         guard settings.optimizationProfile != profile else { return }
         settings.optimizationProfile = profile
-        saveAndApply()
+        guard saveAndApply() else {
+            refreshPreview()
+            return
+        }
         refreshPreview()
         if settings.playbackQuality == .performance {
+            activeOptimizationID = nil
             optimizationTask?.cancel()
             optimizeExistingVideos()
         }
     }
 
     func optimizeExistingVideos() {
-        guard !isOptimizationSuspendedForPlayback else {
+        guard playbackSuspensionReasons.isEmpty else {
             optimizationShouldResumeAfterPlayback = true
             return
         }
@@ -419,14 +399,17 @@ final class WallpaperStore: ObservableObject {
         }
         optimizationRestartRequested = false
         let profile = settings.optimizationProfile
+        let optimizationID = UUID()
+        activeOptimizationID = optimizationID
         optimizationTask = Task { @MainActor [weak self] in
-            await self?.runOptimization(profile: profile)
+            await self?.runOptimization(profile: profile, optimizationID: optimizationID)
         }
     }
 
     func cancelOptimization() {
         optimizationShouldResumeAfterPlayback = false
         optimizationRestartRequested = false
+        activeOptimizationID = nil
         optimizationTask?.cancel()
         optimizationProgress = nil
     }
@@ -463,14 +446,15 @@ final class WallpaperStore: ObservableObject {
 
     func deleteOptimizedCopies() {
         cancelOptimization()
+        let pathsToDelete = settings.videos.compactMap(\.optimizedPath)
         for index in settings.videos.indices {
-            if let path = settings.videos[index].optimizedPath {
-                removeOptimizedFileIfOwned(atPath: path)
-            }
             settings.videos[index].optimizedPath = nil
             settings.videos[index].optimizedProfile = nil
         }
-        saveAndApply()
+        guard saveAndApply() else { return }
+        for path in pathsToDelete {
+            videoFiles.removeOptimizedFileIfOwned(atPath: path)
+        }
         refreshPreview()
     }
 
@@ -536,46 +520,11 @@ final class WallpaperStore: ObservableObject {
     }
 
     func openScreenSaverSettings() {
-        let destination = if #available(macOS 13.0, *) {
-            "x-apple.systempreferences:com.apple.Wallpaper-Settings.extension"
-        } else {
-            "x-apple.systempreferences:com.apple.preference.desktopscreeneffect"
-        }
-        guard let url = URL(string: destination) else {
-            openSystemSettingsFallback()
-            return
-        }
-
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = true
-        configuration.addsToRecentItems = false
-        configuration.promptsUserIfNeeded = true
-        NSWorkspace.shared.open(url, configuration: configuration) { [weak self] application, error in
-            if error == nil, let application {
-                application.activate(options: [.activateAllWindows])
-            } else {
-                Task { @MainActor [weak self] in self?.openSystemSettingsFallback() }
-            }
-        }
+        systemActions.openScreenSaverSettings()
     }
 
     func openAutomationSettings() {
-        guard let url = URL(
-            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation"
-        ) else { return }
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = true
-        configuration.addsToRecentItems = false
-        configuration.promptsUserIfNeeded = true
-        NSWorkspace.shared.open(url, configuration: configuration) { application, error in
-            if let error {
-                Task { @MainActor [weak self] in
-                    self?.errorMessage = "Automation settings could not be opened: \(error.localizedDescription)"
-                }
-            } else {
-                application?.activate(options: [.activateAllWindows])
-            }
-        }
+        systemActions.openAutomationSettings()
     }
 
     func startConfiguredScreenSaver() async -> NativeStartResult {
@@ -604,12 +553,12 @@ final class WallpaperStore: ObservableObject {
 
         isStartingScreenSaver = true
         defer { isStartingScreenSaver = false }
-        suspendOptimizationForPlayback()
+        suspendOptimizationForPlayback(reason: .nativeScreenSaver)
         do {
             try await nativeScreenSaver.startNativeScreenSaver()
             return .started
         } catch {
-            resumeOptimizationAfterPlayback()
+            resumeOptimizationAfterPlayback(reason: .nativeScreenSaver)
             let message = "The native screen saver could not start: \(error.localizedDescription)"
             errorMessage = message
             return .launchFailed(message: message)
@@ -619,28 +568,15 @@ final class WallpaperStore: ObservableObject {
     func previewAllDisplays() {
         guard !previewController.isPresenting else { return }
         errorMessage = nil
-        suspendOptimizationForPlayback()
+        suspendOptimizationForPlayback(reason: .preview)
         if !previewController.previewAllDisplays() {
-            resumeOptimizationAfterPlayback()
+            resumeOptimizationAfterPlayback(reason: .preview)
         }
     }
 
     func lockMacNow() {
         errorMessage = nil
-        let powerManager = URL(fileURLWithPath: "/usr/bin/pmset")
-        guard FileManager.default.isExecutableFile(atPath: powerManager.path) else {
-            errorMessage = "The macOS display-sleep command couldn’t be found."
-            return
-        }
-
-        let process = Process()
-        process.executableURL = powerManager
-        process.arguments = ["displaysleepnow"]
-        do {
-            try process.run()
-        } catch {
-            errorMessage = "The display couldn’t be put to sleep: \(error.localizedDescription)"
-        }
+        systemActions.sleepDisplays()
     }
 
     private func mutateConfiguration(
@@ -656,92 +592,16 @@ final class WallpaperStore: ObservableObject {
         }
     }
 
-    private func openSystemSettingsFallback() {
-        let workspace = NSWorkspace.shared
-        guard let url = workspace.urlForApplication(withBundleIdentifier: "com.apple.systempreferences") else {
-            errorMessage = "Open System Settings, then choose Wallpaper → Screen Saver → Other → My Wallpaper."
-            return
-        }
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = true
-        configuration.addsToRecentItems = false
-        configuration.promptsUserIfNeeded = true
-        workspace.openApplication(at: url, configuration: configuration) { [weak self] application, error in
-            if let error {
-                Task { @MainActor [weak self] in
-                    self?.errorMessage = "System Settings could not be opened: \(error.localizedDescription)"
-                }
-            } else {
-                application?.activate(options: [.activateAllWindows])
-            }
-        }
-    }
-
-    private func managedVideosDirectory() throws -> URL {
-        let directory = try applicationSupportDirectory()
-            .appendingPathComponent("Videos", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return directory
-    }
-
-    private func optimizedVideosDirectory() throws -> URL {
-        let directory = try applicationSupportDirectory()
-            .appendingPathComponent("Optimized Videos", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return directory
-    }
-
-    private func removeOrphanedOptimizedFiles() {
-        guard let directory = try? optimizedVideosDirectory(),
-              let files = try? FileManager.default.contentsOfDirectory(
-                at: directory,
-                includingPropertiesForKeys: nil
-              ) else { return }
-        let retainedPaths = Set(settings.videos.compactMap(\.optimizedPath))
-        for file in files where !retainedPaths.contains(file.path) {
-            try? FileManager.default.removeItem(at: file)
-        }
-    }
-
-    private func removeOptimizedFileIfOwned(atPath path: String) {
-        guard let directory = try? optimizedVideosDirectory() else { return }
-        let file = URL(fileURLWithPath: path).standardizedFileURL
-        guard file.deletingLastPathComponent() == directory.standardizedFileURL else { return }
-        try? FileManager.default.removeItem(at: file)
-    }
-
-    private func deleteManagedFiles(for video: ManagedVideo) throws {
-        if let optimizedPath = video.optimizedPath {
-            let optimizedDirectory = try optimizedVideosDirectory().standardizedFileURL
-            try removeFileIfPresent(
-                at: URL(fileURLWithPath: optimizedPath),
-                ownedBy: optimizedDirectory
-            )
-        }
-        let managedDirectory = try managedVideosDirectory().standardizedFileURL
-        try removeFileIfPresent(at: video.url, ownedBy: managedDirectory)
-    }
-
-    private func removeFileIfPresent(at url: URL, ownedBy directory: URL) throws {
-        let file = url.standardizedFileURL
-        guard file.deletingLastPathComponent() == directory.standardizedFileURL else {
-            throw CocoaError(.fileWriteNoPermission)
-        }
-        if FileManager.default.fileExists(atPath: file.path) {
-            try FileManager.default.removeItem(at: file)
-        }
-    }
-
-    private func applicationSupportDirectory() throws -> URL {
-        let applicationSupport = try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
+    static func decodeInitialSettings(
+        candidates: [SettingsDataCandidate],
+        foundPersistedData: Bool,
+        decoder: JSONDecoder = JSONDecoder()
+    ) -> InitialSettingsLoad {
+        WallpaperSettingsLoader.decodeInitialSettings(
+            candidates: candidates,
+            foundPersistedData: foundPersistedData,
+            decoder: decoder
         )
-        let directory = applicationSupport.appendingPathComponent("My Wallpaper", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return directory
     }
 
     private func refreshPreview() {
@@ -842,10 +702,16 @@ final class WallpaperStore: ObservableObject {
         }.value
     }
 
-    private func runOptimization(profile: VideoOptimizationProfile) async {
+    private func runOptimization(
+        profile: VideoOptimizationProfile,
+        optimizationID: UUID
+    ) async {
         defer {
             let shouldRestart = optimizationRestartRequested
             optimizationRestartRequested = false
+            if activeOptimizationID == optimizationID {
+                activeOptimizationID = nil
+            }
             optimizationTask = nil
             optimizationProgress = nil
             if settings.playbackQuality == .performance, shouldRestart {
@@ -857,6 +723,7 @@ final class WallpaperStore: ObservableObject {
 
         for (position, videoID) in videoIDs.enumerated() {
             guard !Task.isCancelled,
+                  activeOptimizationID == optimizationID,
                   settings.optimizationProfile == profile,
                   let index = settings.videos.firstIndex(where: { $0.id == videoID }) else { return }
             let video = settings.videos[index]
@@ -879,7 +746,7 @@ final class WallpaperStore: ObservableObject {
                 currentFraction: 0
             )
             do {
-                let directory = try optimizedVideosDirectory()
+                let directory = try videoFiles.optimizedVideosDirectory()
                 let profileName = profile == .efficient ? "1440p60" : "4k60"
                 let destination = directory
                     .appendingPathComponent("\(video.id)-\(profileName)-\(UUID().uuidString)")
@@ -892,6 +759,7 @@ final class WallpaperStore: ObservableObject {
                     ) { [weak self] fraction in
                         Task { @MainActor [weak self] in
                             guard let self,
+                                  self.activeOptimizationID == optimizationID,
                                   self.settings.optimizationProfile == profile else { return }
                             self.optimizationProgress = VideoOptimizationProgress(
                                 completedCount: position,
@@ -904,6 +772,10 @@ final class WallpaperStore: ObservableObject {
                     guard FileManager.default.isReadableFile(atPath: destination.path) else {
                         throw VideoOptimizationError.writerFailed(nil)
                     }
+                    try FileManager.default.setAttributes(
+                        [.posixPermissions: 0o600],
+                        ofItemAtPath: destination.path
+                    )
                 } catch {
                     try? FileManager.default.removeItem(at: destination)
                     throw error
@@ -924,10 +796,13 @@ final class WallpaperStore: ObservableObject {
                         for: video.url
                     )
                 }
-                saveAndApply()
+                guard saveAndApply() else {
+                    try? FileManager.default.removeItem(at: destination)
+                    return
+                }
                 refreshPreview()
                 if let previousPath, previousPath != destination.path {
-                    removeOptimizedFileIfOwned(atPath: previousPath)
+                    videoFiles.removeOptimizedFileIfOwned(atPath: previousPath)
                 }
             } catch is CancellationError {
                 return
@@ -941,26 +816,28 @@ final class WallpaperStore: ObservableObject {
         }
     }
 
-    private func suspendOptimizationForPlayback() {
+    private func suspendOptimizationForPlayback(reason: PlaybackSuspensionReason) {
+        let wasSuspended = !playbackSuspensionReasons.isEmpty
+        playbackSuspensionReasons.insert(reason)
         inlinePreviewPolicy.competingPlaybackIsActive = true
         updateInlinePreviewPlayback()
-        guard settings.playbackQuality == .performance else { return }
-        isOptimizationSuspendedForPlayback = true
+        guard !wasSuspended, settings.playbackQuality == .performance else { return }
         optimizationShouldResumeAfterPlayback = optimizationTask != nil || settings.videos.contains {
             guard $0.optimizedProfile == settings.optimizationProfile,
                   let path = $0.optimizedPath else { return true }
             return !FileManager.default.isReadableFile(atPath: path)
         }
         optimizationRestartRequested = false
+        activeOptimizationID = nil
         optimizationTask?.cancel()
         optimizationProgress = nil
     }
 
-    private func resumeOptimizationAfterPlayback() {
-        inlinePreviewPolicy.competingPlaybackIsActive = false
+    private func resumeOptimizationAfterPlayback(reason: PlaybackSuspensionReason) {
+        guard playbackSuspensionReasons.remove(reason) != nil else { return }
+        inlinePreviewPolicy.competingPlaybackIsActive = !playbackSuspensionReasons.isEmpty
         updateInlinePreviewPlayback()
-        guard isOptimizationSuspendedForPlayback else { return }
-        isOptimizationSuspendedForPlayback = false
+        guard playbackSuspensionReasons.isEmpty else { return }
         let shouldResume = optimizationShouldResumeAfterPlayback
         optimizationShouldResumeAfterPlayback = false
         if shouldResume {
@@ -968,17 +845,29 @@ final class WallpaperStore: ObservableObject {
         }
     }
 
-    private func saveAndApply() {
+    @discardableResult
+    private func saveAndApply() -> Bool {
+        var candidate = settings.repaired()
+        candidate.configurationGeneration = UUID()
         do {
-            let data = try encoder.encode(settings)
-            UserDefaults.standard.set(data, forKey: defaultsKey)
-            guard persistSharedSettings() else {
+            let data = try encoder.encode(candidate)
+            guard persistSharedSettings(candidate) else {
                 throw WallpaperPersistenceError.sharedSettingsWriteFailed
             }
+            settings = candidate
+            lastPersistedSettings = candidate
+            UserDefaults.standard.set(data, forKey: defaultsKey)
         } catch {
+            if let lastPersistedSettings {
+                settings = lastPersistedSettings
+            }
+            previewPlayer?.isMuted = settings.isMuted
             errorMessage = "Your screensaver settings couldn’t be saved: \(error.localizedDescription)"
+            applySettings()
+            return false
         }
         applySettings()
+        return true
     }
 
     private func applySettings() {
@@ -994,24 +883,13 @@ final class WallpaperStore: ObservableObject {
     }
 
     @discardableResult
-    private func persistSharedSettings() -> Bool {
+    private func persistSharedSettings(_ settingsToPersist: WallpaperSettings? = nil) -> Bool {
         do {
-            let directory = try applicationSupportDirectory()
-            let legacyData = try encoder.encode(settings)
-            try legacyData.write(
-                to: directory.appendingPathComponent("settings.json"),
-                options: .atomic
-            )
-
-            let manifestURL = directory.appendingPathComponent("screensaver-manifest-v1.json")
-            if let manifest = ScreenSaverManifestBuilder.build(
-                settings: settings,
+            let value = settingsToPersist ?? settings
+            try WallpaperSettingsWriter(videoFiles: videoFiles).persist(
+                settings: value,
                 connectedDisplayIDs: availableScreens.map(\.id)
-            ) {
-                try encoder.encode(manifest).write(to: manifestURL, options: .atomic)
-            } else if FileManager.default.fileExists(atPath: manifestURL.path) {
-                try FileManager.default.removeItem(at: manifestURL)
-            }
+            )
             return true
         } catch {
             errorMessage = "Your screen saver settings couldn’t be saved: \(error.localizedDescription)"
@@ -1039,7 +917,7 @@ final class WallpaperStore: ObservableObject {
         .sink { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.inlinePreviewPolicy.applicationIsActive = true
-                self?.refreshMainWindowVisibility()
+                self?.updateInlinePreviewPlayback()
                 self?.launchAtLogin.refresh()
                 await self?.refreshScreenSaverIntegrationState()
             }
@@ -1062,43 +940,10 @@ final class WallpaperStore: ObservableObject {
             .sink { [weak self] _ in
                 MainActor.assumeIsolated {
                     self?.inlinePreviewPolicy.applicationIsActive = NSApp.isActive
-                    self?.refreshMainWindowVisibility()
+                    self?.updateInlinePreviewPlayback()
                 }
             }
             .store(in: &applicationInactiveCancellables)
-    }
-
-    private func observeMainWindowVisibility() {
-        let center = NotificationCenter.default
-        for name in [
-            NSWindow.didMiniaturizeNotification,
-            NSWindow.didDeminiaturizeNotification,
-            NSWindow.didChangeOcclusionStateNotification
-        ] {
-            center.publisher(for: name)
-                .receive(on: RunLoop.main)
-                .sink { [weak self] notification in
-                    guard let window = notification.object as? NSWindow,
-                          window.title == "My Wallpaper" else { return }
-                    MainActor.assumeIsolated {
-                        self?.inlinePreviewPolicy.windowIsVisible =
-                            !window.isMiniaturized && window.occlusionState.contains(.visible)
-                        self?.updateInlinePreviewPlayback()
-                    }
-                }
-                .store(in: &windowStateCancellables)
-        }
-    }
-
-    private func refreshMainWindowVisibility() {
-        guard let window = NSApp.windows.first(where: { $0.title == "My Wallpaper" }) else {
-            inlinePreviewPolicy.windowIsVisible = false
-            updateInlinePreviewPlayback()
-            return
-        }
-        inlinePreviewPolicy.windowIsVisible =
-            !window.isMiniaturized && window.occlusionState.contains(.visible)
-        updateInlinePreviewPlayback()
     }
 
     private func observeScreenSaverEngineLifecycle() {
@@ -1107,14 +952,18 @@ final class WallpaperStore: ObservableObject {
             .receive(on: RunLoop.main)
             .sink { [weak self] notification in
                 guard Self.isScreenSaverEngine(notification) else { return }
-                MainActor.assumeIsolated { self?.suspendOptimizationForPlayback() }
+                MainActor.assumeIsolated {
+                    self?.suspendOptimizationForPlayback(reason: .nativeScreenSaver)
+                }
             }
             .store(in: &screenSaverEngineCancellables)
         center.publisher(for: NSWorkspace.didTerminateApplicationNotification)
             .receive(on: RunLoop.main)
             .sink { [weak self] notification in
                 guard Self.isScreenSaverEngine(notification) else { return }
-                MainActor.assumeIsolated { self?.resumeOptimizationAfterPlayback() }
+                MainActor.assumeIsolated {
+                    self?.resumeOptimizationAfterPlayback(reason: .nativeScreenSaver)
+                }
             }
             .store(in: &screenSaverEngineCancellables)
     }
@@ -1125,35 +974,35 @@ final class WallpaperStore: ObservableObject {
         return application?.bundleIdentifier == "com.apple.ScreenSaver.Engine"
     }
 
-    private func migrateLegacyVideoToScreensIfNeeded() {
-        guard settings.screens.isEmpty,
-              let video = settings.videos.first else { return }
-        settings.screens = availableScreens.map {
-            ScreenConfiguration(
-                screenID: $0.id,
-                screenName: $0.name,
-                videoIDs: [video.id],
-                startVideoID: video.id
-            )
-        }
-        saveAndApply()
+    private func migrateLegacyVideoToScreensIfNeeded(decodedFromLegacyFormat: Bool) {
+        let migrated = WallpaperSettingsMigration.assigningLegacyVideoIfNeeded(
+            in: settings,
+            displays: availableScreens,
+            decodedFromLegacyFormat: decodedFromLegacyFormat
+        )
+        guard migrated != settings else { return }
+        settings = migrated
+        if !isInitializing { saveAndApply() }
     }
 
-    private func migrateDuplicateLibraryVideosIfNeeded() {
-        let result = VideoLibraryLogic.deduplicatingLegacyVideos(in: settings) { video in
-            VideoContentFingerprint.sampled(at: video.url)
-        }
-        guard !result.redundantVideos.isEmpty,
-              let encodedSettings = try? encoder.encode(result.settings) else { return }
+    private func migrateDuplicateLibraryVideosIfNeeded() async {
+        let sourceSettings = settings
+        let result = await Task.detached(priority: .utility) {
+            VideoLibraryLogic.deduplicatingLegacyVideos(
+                in: sourceSettings,
+                sampledFingerprint: { VideoContentFingerprint.sampled(at: $0.url) },
+                fullFingerprint: { VideoContentFingerprint.full(at: $0.url) }
+            )
+        }.value
+        guard settings == sourceSettings else { return }
+        guard !result.redundantVideos.isEmpty else { return }
 
         let previousSettings = settings
         settings = result.settings
-        guard persistSharedSettings() else {
+        guard saveAndApply() else {
             settings = previousSettings
-            _ = persistSharedSettings()
             return
         }
-        UserDefaults.standard.set(encodedSettings, forKey: defaultsKey)
 
         let retainedPaths = Set(settings.videos.flatMap { video in
             [video.path, video.optimizedPath].compactMap { $0 }
@@ -1163,17 +1012,17 @@ final class WallpaperStore: ObservableObject {
             do {
                 let source = video.url.standardizedFileURL
                 if !retainedPaths.contains(source.path) {
-                    try removeFileIfPresent(
+                    try videoFiles.removeFileIfPresent(
                         at: source,
-                        ownedBy: try managedVideosDirectory()
+                        ownedBy: try videoFiles.managedVideosDirectory()
                     )
                 }
                 if let optimizedPath = video.optimizedPath {
                     let optimized = URL(fileURLWithPath: optimizedPath).standardizedFileURL
                     if !retainedPaths.contains(optimized.path) {
-                        try removeFileIfPresent(
+                        try videoFiles.removeFileIfPresent(
                             at: optimized,
-                            ownedBy: try optimizedVideosDirectory()
+                            ownedBy: try videoFiles.optimizedVideosDirectory()
                         )
                     }
                 }
@@ -1189,13 +1038,9 @@ final class WallpaperStore: ObservableObject {
     }
 }
 
-private struct LegacyWallpaperSettings: Codable {
-    let videoPath: String?
-    let videoDisplayName: String?
-    let idleMinutes: Int
-    let isEnabled: Bool
-    let isMuted: Bool
-    let scaling: VideoScaling
+private enum PlaybackSuspensionReason: Hashable {
+    case preview
+    case nativeScreenSaver
 }
 
 private enum WallpaperPersistenceError: LocalizedError {

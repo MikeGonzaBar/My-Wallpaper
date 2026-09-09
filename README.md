@@ -10,7 +10,7 @@ The interface follows a classic System 1984 visual language: monochrome controls
 
 The current release is **My Wallpaper 0.4.0 (build 6)**. It introduces the shared Video Library, duplicate-safe content imports, reusable display assignments, quiet launch at login, and the redesigned three-page Displays, Video Library, and Preferences workflow.
 
-This repository contains a working prototype. GitHub Actions produces an ad-hoc-signed app by default, so macOS may require **Control-click → Open** the first time. For public distribution, configure the optional Developer ID and notarization secrets documented below; without them, the app is not notarized by Apple.
+This repository contains a working prototype. Local and ordinary CI builds are ad-hoc signed, so macOS may require **Control-click → Open** the first time. Public tagged releases require the complete Developer ID and notarization configuration documented below; the workflow refuses to publish without it.
 
 ## New here?
 
@@ -107,6 +107,8 @@ The app writes a versioned native playback manifest in Application Support. Conf
 
 **Preview All Displays** is separate from the real saver: it uses temporary app-owned windows, does not lock, keeps the displays awake only during the preview, and exits after 45 seconds or on input.
 
+For screen-saver troubleshooting, collect the diagnostic stream from the last five minutes with `./scripts/collect-screensaver-diagnostics.sh`. Pass `15m`, `30m`, `1h`, `6h`, or `1d` to inspect a longer bounded interval. Video paths and display-routing candidates are represented by stable short fingerprints rather than written to those log fields.
+
 ![Preferences showing native screen saver setup, Appearance, launch at login, Performance Mode, playback, and privacy controls](assets/readme-preferences.png)
 
 ## Build locally
@@ -149,23 +151,23 @@ To create the installer DMG locally after building:
 
 The result is `dist/My-Wallpaper.dmg`.
 
-GitHub Actions runs tests and the release build on `macos-14` for pushes, pull requests, and manual runs. App and saver versions come from `support/version.env`, and a release tag must match that marketing version. Push `v0.4.0` to publish both `My-Wallpaper.dmg` and `My-Wallpaper.app.zip` to a GitHub Release:
+GitHub Actions runs every test suite and produces a secretless, ad-hoc-signed universal build on `macos-14` for pushes, pull requests, and manual runs. Both executable slices explicitly target macOS 14. App and saver versions come from `support/version.env`, and a release tag must match that marketing version. A tagged build is published only after the protected `production-release` environment supplies complete signing and notarization credentials and every Developer ID, architecture, deployment-target, Hardened Runtime, entitlement, notarization, stapling, and Gatekeeper check succeeds. Push `v0.4.0` to publish `My-Wallpaper.dmg`, `My-Wallpaper.app.zip`, and `SHA256SUMS` to a GitHub Release:
 
 ```sh
 git tag v0.4.0
 git push origin v0.4.0
 ```
 
-For signed distribution, add these repository secrets before pushing the tag:
+For signed distribution, configure these secrets in the protected `production-release` environment before pushing the tag:
 
 - `MACOS_CERTIFICATE_BASE64`: base64-encoded Developer ID Application `.p12` certificate.
 - `MACOS_CERTIFICATE_PASSWORD`: password for that certificate.
 - `MACOS_KEYCHAIN_PASSWORD`: temporary CI keychain password.
-- `MACOS_SIGNING_IDENTITY`: optional certificate name; defaults to `Developer ID Application`.
+- `MACOS_SIGNING_IDENTITY`: the exact Developer ID Application certificate identity.
 - `APPLE_ID`, `APPLE_TEAM_ID`, and `APPLE_APP_PASSWORD`: Apple notarization credentials.
 
-When these secrets are present, the workflow signs and notarizes/staples both the app and final DMG. Keep these values only in GitHub Actions secrets, never in the repository.
+All seven values are required for a tag; the workflow fails closed rather than publishing an unsigned or unnotarized release. Keep them only in GitHub environment secrets, require reviewer approval for that environment, and never store them in the repository. Third-party workflow actions are pinned to independently verified upstream commit SHAs rather than mutable version tags.
 
 ## Data and privacy
 
-Imported videos are copied into the app's Application Support directory. Optional performance copies are stored separately under `~/Library/Application Support/My Wallpaper/Optimized Videos` and can be deleted without affecting originals. Settings are stored in `~/Library/Application Support/My Wallpaper/settings.json`, the native module reads `screensaver-manifest-v1.json`, and the app also keeps its local preferences. The app does not require an account or network connection. Automation access is used only for the read-only selected-saver verification described above.
+Imported videos are copied into the app's Application Support directory. Optional performance copies are stored separately under `~/Library/Application Support/My Wallpaper/Optimized Videos` and can be deleted without affecting originals. Settings are stored in `~/Library/Application Support/My Wallpaper/settings.json`, the native module reads `screensaver-manifest-v1.json`, and the app also keeps its local preferences. Keep the account's Application Support directory private because these files contain personal media and absolute local paths. The screen saver rejects oversized manifests, excessive routes, non-regular files, and unreadable paths before creating player items. The app does not require an account or network connection. Automation access is used only for the read-only selected-saver verification described above.

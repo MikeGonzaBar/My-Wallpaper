@@ -21,7 +21,7 @@ enum NativeStartResult: Equatable {
     case launchFailed(message: String)
 }
 
-final class NativeScreenSaverController {
+final class NativeScreenSaverController: @unchecked Sendable {
     private let moduleManager: ScreenSaverModuleManaging
     private let systemService: SystemScreenSaverSelecting
     private let applicationLauncher: WorkspaceApplicationLaunching

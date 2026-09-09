@@ -15,13 +15,13 @@ struct VideoOptimizationProgress: Equatable {
     }
 }
 
-protocol VideoOptimizing {
+protocol VideoOptimizing: Sendable {
     func metadata(for sourceURL: URL) async throws -> VideoTechnicalMetadata
     func optimize(
         sourceURL: URL,
         destinationURL: URL,
         profile: VideoOptimizationProfile,
-        progress: @escaping (Double) -> Void
+        progress: @escaping @Sendable (Double) -> Void
     ) async throws
 }
 
@@ -75,7 +75,30 @@ private final class VideoTranscodingSession: @unchecked Sendable {
     }
 }
 
-final class AVFoundationVideoOptimizer: VideoOptimizing {
+private final class VideoTranscodingState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var appendFailed = false
+    private var lastReportedProgress = -1.0
+
+    func markAppendFailed(session: VideoTranscodingSession) {
+        lock.withLock { appendFailed = true }
+        session.reader.cancelReading()
+    }
+
+    func shouldReport(_ fraction: Double) -> Bool {
+        lock.withLock {
+            guard fraction - lastReportedProgress >= 0.01 else { return false }
+            lastReportedProgress = fraction
+            return true
+        }
+    }
+
+    var hasAppendFailure: Bool {
+        lock.withLock { appendFailed }
+    }
+}
+
+final class AVFoundationVideoOptimizer: VideoOptimizing, @unchecked Sendable {
     func metadata(for sourceURL: URL) async throws -> VideoTechnicalMetadata {
         let asset = AVURLAsset(url: sourceURL)
         guard let track = try await asset.loadTracks(withMediaType: .video).first else {
@@ -104,7 +127,7 @@ final class AVFoundationVideoOptimizer: VideoOptimizing {
         sourceURL: URL,
         destinationURL: URL,
         profile: VideoOptimizationProfile,
-        progress: @escaping (Double) -> Void
+        progress: @escaping @Sendable (Double) -> Void
     ) async throws {
         let asset = AVURLAsset(url: sourceURL)
         guard let videoTrack = try await asset.loadTracks(withMediaType: .video).first else {
@@ -210,15 +233,17 @@ final class AVFoundationVideoOptimizer: VideoOptimizing {
             audioPair: audioPair
         )
 
-        try await withTaskCancellationHandler {
-            try await Self.writeSamples(
-                session: session,
-                duration: duration,
-                progress: progress
-            )
-        } onCancel: {
-            session.reader.cancelReading()
-            session.writer.cancelWriting()
+        try await Self.propagatingCancellation {
+            try await withTaskCancellationHandler {
+                try await Self.writeSamples(
+                    session: session,
+                    duration: duration,
+                    progress: progress
+                )
+            } onCancel: {
+                session.reader.cancelReading()
+                session.writer.cancelWriting()
+            }
         }
     }
 
@@ -239,6 +264,19 @@ final class AVFoundationVideoOptimizer: VideoOptimizing {
 
     static var hardwareEncoderSpecification: [String: Any] {
         [kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder as String: true]
+    }
+
+    static func propagatingCancellation<T>(
+        _ operation: () async throws -> T
+    ) async throws -> T {
+        do {
+            let result = try await operation()
+            try Task.checkCancellation()
+            return result
+        } catch {
+            try Task.checkCancellation()
+            throw error
+        }
     }
 
     private static func presentationSize(
@@ -295,20 +333,11 @@ final class AVFoundationVideoOptimizer: VideoOptimizing {
     private static func writeSamples(
         session: VideoTranscodingSession,
         duration: CMTime,
-        progress: @escaping (Double) -> Void
+        progress: @escaping @Sendable (Double) -> Void
     ) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             let group = DispatchGroup()
-            let lock = NSLock()
-            var appendFailed = false
-            var lastReportedProgress = -1.0
-
-            func markAppendFailed() {
-                lock.lock()
-                appendFailed = true
-                lock.unlock()
-                session.reader.cancelReading()
-            }
+            let state = VideoTranscodingState()
 
             group.enter()
             session.videoInput.requestMediaDataWhenReady(on: DispatchQueue(label: "video-optimizer.video")) {
@@ -321,13 +350,12 @@ final class AVFoundationVideoOptimizer: VideoOptimizing {
                     let seconds = CMSampleBufferGetPresentationTimeStamp(sample).seconds
                     if duration.seconds > 0 {
                         let fraction = min(1, max(0, seconds / duration.seconds))
-                        if fraction - lastReportedProgress >= 0.01 {
-                            lastReportedProgress = fraction
+                        if state.shouldReport(fraction) {
                             progress(fraction)
                         }
                     }
                     guard session.videoInput.append(sample) else {
-                        markAppendFailed()
+                        state.markAppendFailed(session: session)
                         session.videoInput.markAsFinished()
                         group.leave()
                         return
@@ -345,7 +373,7 @@ final class AVFoundationVideoOptimizer: VideoOptimizing {
                             return
                         }
                         guard session.audioInput?.append(sample) == true else {
-                            markAppendFailed()
+                            state.markAppendFailed(session: session)
                             session.audioInput?.markAsFinished()
                             group.leave()
                             return
@@ -355,10 +383,7 @@ final class AVFoundationVideoOptimizer: VideoOptimizing {
             }
 
             group.notify(queue: DispatchQueue(label: "video-optimizer.finish")) {
-                lock.lock()
-                let failed = appendFailed
-                lock.unlock()
-                guard !failed, session.reader.status == .completed else {
+                guard !state.hasAppendFailure, session.reader.status == .completed else {
                     session.writer.cancelWriting()
                     continuation.resume(throwing: VideoOptimizationError.readerFailed(session.reader.error))
                     return

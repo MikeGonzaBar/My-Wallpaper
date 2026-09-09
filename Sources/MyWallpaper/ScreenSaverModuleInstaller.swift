@@ -74,10 +74,13 @@ final class ScreenSaverModuleInstaller: ScreenSaverModuleManaging {
         let staged = parent.appendingPathComponent(".My Wallpaper-\(UUID().uuidString).saver")
         let backupName = ".My Wallpaper-\(UUID().uuidString).backup.saver"
         let backup = parent.appendingPathComponent(backupName)
+        var removeBackupDuringCleanup = true
 
         defer {
             try? fileManager.removeItem(at: staged)
-            try? fileManager.removeItem(at: backup)
+            if removeBackupDuringCleanup {
+                try? fileManager.removeItem(at: backup)
+            }
         }
 
         try fileManager.copyItem(at: embedded.url, to: staged)
@@ -97,8 +100,14 @@ final class ScreenSaverModuleInstaller: ScreenSaverModuleManaging {
                     options: [.withoutDeletingBackupItem]
                 )
             } catch {
-                try restoreBackupIfPresent(backup, destination: destination)
-                throw error
+                let replacementError = error
+                do {
+                    try restoreBackupIfPresent(backup, destination: destination)
+                } catch {
+                    removeBackupDuringCleanup = false
+                    throw ScreenSaverModuleError.rollbackFailed
+                }
+                throw replacementError
             }
         } else {
             try fileManager.moveItem(at: staged, to: destination)
@@ -116,6 +125,7 @@ final class ScreenSaverModuleInstaller: ScreenSaverModuleManaging {
                 do {
                     try restoreBackupIfPresent(backup, destination: destination)
                 } catch {
+                    removeBackupDuringCleanup = false
                     throw ScreenSaverModuleError.rollbackFailed
                 }
             } else {
@@ -272,7 +282,7 @@ private enum ScreenSaverModuleError: LocalizedError {
         case .installedBundleMismatch:
             "The installed screen saver did not match this app after installation."
         case .rollbackFailed:
-            "The previous screen saver could not be restored after an installation failure."
+            "The previous screen saver could not be restored automatically. Its backup was preserved in the user’s Screen Savers folder."
         }
     }
 }

@@ -33,11 +33,29 @@ struct SettingsView: View {
                 PerformanceModePanel(store: store)
 
                 RetroWindow(title: "PLAYBACK") {
-                    RetroCheckbox(
-                        title: "MUTE AUDIO",
-                        isOn: store.settings.isMuted,
-                        action: { store.setMuted(!store.settings.isMuted) }
-                    )
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("VIDEO SIZING")
+                            .font(RetroFont.label(size: 9))
+                        RetroChoiceBar(
+                            values: VideoScaling.allCases,
+                            selected: store.settings.scaling,
+                            accessibilityLabel: "Video sizing",
+                            title: { $0.title },
+                            onSelect: store.setScaling
+                        )
+
+                        RetroCheckbox(
+                            title: "MUTE AUDIO",
+                            isOn: store.settings.isMuted,
+                            action: { store.setMuted(!store.settings.isMuted) }
+                        )
+                    }
+                }
+
+                RetroWindow(title: "PRIVACY") {
+                    Text("VIDEOS AND SETTINGS STAY ON THIS MAC. MY WALLPAPER DOES NOT USE A NETWORK SERVICE OR ACCOUNT.")
+                        .font(RetroFont.body(size: 9))
+                        .foregroundStyle(RetroPalette.secondaryInk)
                 }
             }
             .padding(24)

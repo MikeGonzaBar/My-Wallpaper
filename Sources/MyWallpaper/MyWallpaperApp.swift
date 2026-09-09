@@ -12,6 +12,11 @@ struct MyWallpaperApp: App {
                 .frame(minWidth: 1_040, minHeight: 680)
                 .preferredColorScheme(store.appearanceMode.colorScheme)
                 .overlay { DiagonalAppearanceTransition(trigger: store.appearanceTransitionID) }
+                .background {
+                    MainWindowObserver(registry: .shared) { isVisible in
+                        store.setMainWindowVisible(isVisible)
+                    }
+                }
         }
         .windowStyle(.hiddenTitleBar)
         .commands {
@@ -27,8 +32,8 @@ struct MyWallpaperApp: App {
 
         Settings {
             SettingsView(store: store)
-                .frame(width: 520)
-                .frame(minHeight: 640, idealHeight: 760, maxHeight: 820)
+                .frame(minWidth: 520, idealWidth: 620, maxWidth: 820)
+                .frame(minHeight: 640, idealHeight: 760, maxHeight: 900)
                 .preferredColorScheme(store.appearanceMode.colorScheme)
                 .overlay { DiagonalAppearanceTransition(trigger: store.appearanceTransitionID) }
         }
@@ -82,14 +87,17 @@ private struct MenuBarMenu: View {
         } label: {
             Label("Preview All Displays (45 Seconds)", systemImage: "rectangle.on.rectangle")
         }
-        .help("Preview does not lock your Mac.")
+        .help(
+            "Preview does not lock your Mac. It ends after 45 seconds, or when you "
+                + "move the pointer, press a key, click Exit Preview, or switch apps."
+        )
 
         Button {
             store.lockMacNow()
         } label: {
-            Label("Lock Mac Now", systemImage: "lock.fill")
+            Label("Sleep Displays", systemImage: "display")
         }
-        .help("Puts the displays to sleep; authentication follows your macOS Lock Screen policy.")
+        .help("Authentication after wake follows your macOS Lock Screen password-delay policy.")
 
         Divider()
 
@@ -114,14 +122,12 @@ private struct MenuBarMenu: View {
     }
 
     private func showMainWindow() {
-        NSApp.setActivationPolicy(.regular)
-        NSApp.unhide(nil)
-        if let window = NSApp.windows.first(where: { $0.title == "My Wallpaper" && !$0.isSheet }) {
-            window.makeKeyAndOrderFront(nil)
-        } else {
+        let registry = MainWindowRegistry.shared
+        if !registry.showExistingWindow() {
+            registry.prepareToOpenWindow()
             openWindow(id: "main")
+            NSApp.activate(ignoringOtherApps: true)
         }
-        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func showScreenSaverSetup() {
@@ -152,9 +158,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
         NSApp.setActivationPolicy(.accessory)
         DispatchQueue.main.async {
-            NSApp.windows
-                .filter { $0.title == "My Wallpaper" && !$0.isSheet }
-                .forEach { $0.orderOut(nil) }
+            MainWindowRegistry.shared.requestHiddenWindow()
             NSApp.hide(nil)
         }
     }
@@ -163,17 +167,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         _ sender: NSApplication,
         hasVisibleWindows flag: Bool
     ) -> Bool {
-        guard !flag,
-              let window = sender.windows.first(where: {
-                  $0.title == "My Wallpaper" && !$0.isSheet
-              }) else {
+        guard !flag else {
             return true
         }
-
-        sender.setActivationPolicy(.regular)
-        sender.unhide(nil)
-        window.makeKeyAndOrderFront(nil)
-        sender.activate(ignoringOtherApps: true)
+        let registry = MainWindowRegistry.shared
+        guard registry.showExistingWindow() else {
+            registry.prepareToOpenWindow()
+            return true
+        }
         startedAsLoginItem = false
         return false
     }

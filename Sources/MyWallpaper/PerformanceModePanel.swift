@@ -9,7 +9,9 @@ struct PerformanceModePanel: View {
                 RetroChoiceBar(
                     values: VideoPlaybackQuality.allCases,
                     selected: store.settings.playbackQuality,
-                    title: { $0.rawValue.uppercased() },
+                    accessibilityLabel: "Playback quality",
+                    title: { $0.title.uppercased() },
+                    accessibilityTitle: { $0.title },
                     onSelect: store.setPlaybackQuality
                 )
 
@@ -25,7 +27,9 @@ struct PerformanceModePanel: View {
                     RetroChoiceBar(
                         values: VideoOptimizationProfile.allCases,
                         selected: store.settings.optimizationProfile,
-                        title: { $0.rawValue.uppercased() },
+                        accessibilityLabel: "Optimization profile",
+                        title: { $0.title.uppercased() },
+                        accessibilityTitle: { $0.title },
                         onSelect: store.setOptimizationProfile
                     )
                     optimizationStatus
