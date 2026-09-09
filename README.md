@@ -8,7 +8,7 @@ The interface follows a classic System 1984 visual language: monochrome controls
 
 ## Prototype status
 
-The current release is **My Wallpaper 0.4.2 (build 8)**. It introduces the shared Video Library, duplicate-safe content imports, reusable display assignments, quiet launch at login, and the redesigned three-page Displays, Video Library, and Preferences workflow.
+The current release is **My Wallpaper 0.4.3 (build 9)**. It introduces the shared Video Library, duplicate-safe content imports, reusable display assignments, quiet launch at login, and the redesigned three-page Displays, Video Library, and Preferences workflow.
 
 This repository contains a working prototype. Local and ordinary CI builds are ad-hoc signed, so macOS may require **Control-click → Open** the first time. Public tagged releases require the complete Developer ID and notarization configuration documented below; the workflow refuses to publish without it.
 
@@ -151,11 +151,11 @@ To create the installer DMG locally after building:
 
 The result is `dist/My-Wallpaper.dmg`.
 
-GitHub Actions runs every test suite and produces a secretless, ad-hoc-signed universal build on `macos-14` for pushes, pull requests, and manual runs. Both executable slices explicitly target macOS 14. App and saver versions come from `support/version.env`, and a release tag must match that marketing version. A tagged build is published only after the protected `production-release` environment supplies complete signing and notarization credentials and every Developer ID, architecture, deployment-target, Hardened Runtime, entitlement, notarization, stapling, and Gatekeeper check succeeds. Push `v0.4.0` to publish `My-Wallpaper.dmg`, `My-Wallpaper.app.zip`, and `SHA256SUMS` to a GitHub Release:
+GitHub Actions runs every test suite and produces a secretless, ad-hoc-signed universal build on `macos-14` for pushes, pull requests, and manual runs. Both executable slices explicitly target macOS 14. App and saver versions come from `Support/version.env`, and a release tag must match that marketing version. A tagged build is published only after the protected `production-release` environment supplies complete signing and notarization credentials and every Developer ID, architecture, deployment-target, Hardened Runtime, entitlement, notarization, stapling, and Gatekeeper check succeeds. Push `v0.4.3` to publish `My-Wallpaper.dmg`, `My-Wallpaper.app.zip`, and `SHA256SUMS` to a GitHub Release:
 
 ```sh
-git tag v0.4.2
-git push origin v0.4.2
+git tag v0.4.3
+git push origin v0.4.3
 ```
 
 For signed distribution, configure these secrets in the protected `production-release` environment before pushing the tag:

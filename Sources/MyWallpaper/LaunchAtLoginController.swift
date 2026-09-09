@@ -1,5 +1,5 @@
 import Combine
-import ServiceManagement
+@preconcurrency import ServiceManagement
 
 enum LaunchAtLoginState: Equatable {
     case disabled

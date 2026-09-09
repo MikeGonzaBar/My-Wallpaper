@@ -1,5 +1,6 @@
 import SwiftUI
 
+@MainActor
 struct DiagonalAppearanceTransition: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let trigger: UUID

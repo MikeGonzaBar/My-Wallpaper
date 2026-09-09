@@ -1,5 +1,10 @@
 # Releases
 
+## 0.4.3 (build 9)
+
+- Fixes Swift 5.10 strict-concurrency failures in the appearance transition and launch-at-login integration so release builds complete on the macOS 14 runner.
+- Aligns the checked-in app and screen-saver bundle metadata with the release version source.
+
 ## 0.4.2 (build 8)
 
 - Fixes Swift actor isolation in the video preview bridge so release CI builds successfully with strict concurrency checking.
