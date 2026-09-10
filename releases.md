@@ -1,5 +1,11 @@
 # Releases
 
+## 0.4.4 (build 10)
+
+- Publishes a clearly labeled ad-hoc-signed prerelease when Apple distribution credentials are unavailable.
+- Preserves Developer ID signing and notarization automatically when the complete credential set is configured.
+- Rejects partially configured signing credentials with an actionable list of missing secrets.
+
 ## 0.4.3 (build 9)
 
 - Fixes Swift 5.10 strict-concurrency failures in the appearance transition and launch-at-login integration so release builds complete on the macOS 14 runner.

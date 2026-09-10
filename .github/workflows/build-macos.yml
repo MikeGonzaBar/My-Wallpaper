@@ -51,16 +51,19 @@ jobs:
           path: dist/My Wallpaper.app
 
   release-build:
-    name: Sign, notarize, and package tag
+    name: Package tagged release
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: macos-14
     environment: production-release
+    outputs:
+      signed: ${{ steps.release-mode.outputs.signed }}
     steps:
       - name: Check out source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - *select-xcode
-      - name: Require complete release credentials
+      - name: Select release signing mode
+        id: release-mode
         env:
           MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
@@ -70,13 +73,36 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
-          test -n "$MACOS_CERTIFICATE_BASE64"
-          test -n "$MACOS_CERTIFICATE_PASSWORD"
-          test -n "$MACOS_KEYCHAIN_PASSWORD"
-          test -n "$MACOS_SIGNING_IDENTITY"
-          test -n "$APPLE_ID"
-          test -n "$APPLE_TEAM_ID"
-          test -n "$APPLE_APP_PASSWORD"
+          credential_names=(
+            MACOS_CERTIFICATE_BASE64
+            MACOS_CERTIFICATE_PASSWORD
+            MACOS_KEYCHAIN_PASSWORD
+            MACOS_SIGNING_IDENTITY
+            APPLE_ID
+            APPLE_TEAM_ID
+            APPLE_APP_PASSWORD
+          )
+          present_count=0
+          missing_names=()
+          for credential_name in "${credential_names[@]}"; do
+            if [ -n "${!credential_name}" ]; then
+              present_count=$((present_count + 1))
+            else
+              missing_names+=("$credential_name")
+            fi
+          done
+          if [ "$present_count" -eq 0 ]; then
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "No distribution credentials configured; publishing an ad-hoc-signed prerelease."
+          elif [ "$present_count" -eq "${#credential_names[@]}" ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+            echo "Complete distribution credentials detected; publishing a notarized release."
+          else
+            printf 'Incomplete distribution credentials. Missing:' >&2
+            printf ' %s' "${missing_names[@]}" >&2
+            printf '\n' >&2
+            exit 1
+          fi
       - name: Require matching release tag
         run: |
           source support/version.env
@@ -86,6 +112,7 @@ jobs:
           chmod +x scripts/*.sh
           ./scripts/package-app.sh release
       - name: Import Developer ID certificate
+        if: steps.release-mode.outputs.signed == 'true'
         env:
           MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
@@ -104,6 +131,7 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -s -k "$MACOS_KEYCHAIN_PASSWORD" "$keychain_path"
           rm -f "$certificate_path"
       - name: Sign and verify Developer ID contract
+        if: steps.release-mode.outputs.signed == 'true'
         env:
           MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -116,6 +144,7 @@ jobs:
             --sign "$MACOS_SIGNING_IDENTITY" "$app"
           ./scripts/verify-release-artifacts.sh developer-id "$APPLE_TEAM_ID"
       - name: Notarize and staple app
+        if: steps.release-mode.outputs.signed == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -129,6 +158,7 @@ jobs:
           xcrun stapler validate "dist/My Wallpaper.app"
           spctl --assess --type execute --verbose=2 "dist/My Wallpaper.app"
       - name: Create, notarize, and validate installer
+        if: steps.release-mode.outputs.signed == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -141,12 +171,18 @@ jobs:
           xcrun stapler validate "dist/My-Wallpaper.dmg"
           spctl --assess --type open --context context:primary-signature --verbose=2 "dist/My-Wallpaper.dmg"
           hdiutil imageinfo "dist/My-Wallpaper.dmg" >/dev/null
+      - name: Create and validate ad-hoc installer
+        if: steps.release-mode.outputs.signed == 'false'
+        run: |
+          ./scripts/verify-release-artifacts.sh adhoc
+          ./scripts/create-dmg.sh
+          hdiutil imageinfo "dist/My-Wallpaper.dmg" >/dev/null
       - name: Create checksummed release artifacts
         run: |
           ditto -c -k --sequesterRsrc --keepParent \
             "dist/My Wallpaper.app" "dist/My-Wallpaper.app.zip"
           shasum -a 256 "dist/My-Wallpaper.dmg" "dist/My-Wallpaper.app.zip" > dist/SHA256SUMS
-      - name: Upload signed release artifacts
+      - name: Upload release artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: my-wallpaper-release-${{ github.ref_name }}
@@ -165,7 +201,7 @@ jobs:
       contents: write
     environment: production-release
     steps:
-      - name: Download signed release artifacts
+      - name: Download release artifacts
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: my-wallpaper-release-${{ github.ref_name }}
@@ -173,11 +209,22 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_SIGNED: ${{ needs.release-build.outputs.signed }}
         run: |
+          release_options=(
+            --repo "$GITHUB_REPOSITORY"
+            --title "My Wallpaper $GITHUB_REF_NAME"
+          )
+          if [ "$RELEASE_SIGNED" = true ]; then
+            release_options+=(--generate-notes)
+          else
+            release_options+=(
+              --prerelease
+              --notes "This build is ad-hoc signed and is not notarized by Apple. On first launch, Control-click the app and choose Open. SHA256SUMS can be used to verify both downloads."
+            )
+          fi
           gh release create "$GITHUB_REF_NAME" \
             release-assets/My-Wallpaper.dmg \
             release-assets/My-Wallpaper.app.zip \
             release-assets/SHA256SUMS \
-            --repo "$GITHUB_REPOSITORY" \
-            --generate-notes \
-            --title "My Wallpaper $GITHUB_REF_NAME"
+            "${release_options[@]}"
