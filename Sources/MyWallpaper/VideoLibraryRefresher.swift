@@ -5,7 +5,7 @@ enum VideoLibraryRefresher {
     static func refresh<Value>(
         videos: () -> [ManagedVideo],
         needsRefresh: (ManagedVideo) -> Bool,
-        load: (URL) async -> Value?,
+        load: @MainActor (URL) async -> Value?,
         apply: (Int, Value) -> Void
     ) async -> Bool {
         var changed = false

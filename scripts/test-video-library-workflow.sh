@@ -16,6 +16,7 @@ fi
 mkdir -p "$module_cache_dir"
 
 swiftc \
+    -strict-concurrency=complete -warnings-as-errors \
     -sdk "$sdk_path" \
     -module-cache-path "$module_cache_dir" \
     -framework SwiftUI \
