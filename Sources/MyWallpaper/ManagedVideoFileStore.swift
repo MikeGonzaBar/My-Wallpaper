@@ -42,14 +42,20 @@ struct ManagedVideoFileStore: Sendable {
         try? FileManager.default.removeItem(at: file)
     }
 
-    func deleteManagedFiles(for video: ManagedVideo) throws {
-        if let optimizedPath = video.optimizedPath {
+    func deleteManagedFiles(for video: ManagedVideo, retaining videos: [ManagedVideo] = []) throws {
+        let retainedPaths = Set(videos.flatMap { [$0.path, $0.optimizedPath].compactMap { $0 } }.map {
+            URL(fileURLWithPath: $0).standardizedFileURL.path
+        })
+        if let optimizedPath = video.optimizedPath,
+           !retainedPaths.contains(URL(fileURLWithPath: optimizedPath).standardizedFileURL.path) {
             try removeFileIfPresent(
                 at: URL(fileURLWithPath: optimizedPath),
                 ownedBy: try optimizedVideosDirectory()
             )
         }
-        try removeFileIfPresent(at: video.url, ownedBy: try managedVideosDirectory())
+        if !retainedPaths.contains(video.url.standardizedFileURL.path) {
+            try removeFileIfPresent(at: video.url, ownedBy: try managedVideosDirectory())
+        }
     }
 
     func removeFileIfPresent(at url: URL, ownedBy directory: URL) throws {

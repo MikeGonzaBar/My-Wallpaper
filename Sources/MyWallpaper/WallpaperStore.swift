@@ -10,7 +10,7 @@ final class WallpaperStore: ObservableObject {
     @Published private(set) var previewPlayer: AVPlayer?
     @Published private(set) var errorMessage: String?
     @Published private(set) var isImporting = false
-    @Published private(set) var optimizationProgress: VideoOptimizationProgress?
+    @Published private(set) var recoveringVideoIDs = Set<String>()
     @Published private(set) var screenSaverIntegrationState = ScreenSaverIntegrationState.verificationRequired
     @Published private(set) var isStartingScreenSaver = false
     @Published private(set) var appearanceMode: AppearanceMode
@@ -40,11 +40,35 @@ final class WallpaperStore: ObservableObject {
         displaysPageIsVisible: false,
         competingPlaybackIsActive: false
     )
-    private var optimizationTask: Task<Void, Never>?
-    private var activeOptimizationID: UUID?
-    private var optimizationRestartRequested = false
-    private var optimizationShouldResumeAfterPlayback = false
+    var assignmentUndoManager: UndoManager? {
+        get { assignmentEditor.undoManager }
+        set { assignmentEditor.undoManager = newValue }
+    }
+    private lazy var assignmentEditor = PlaylistAssignmentEditor(
+        settings: { [weak self] in self?.settings ?? WallpaperSettings() },
+        configuration: { [weak self] id in
+            self?.configuration(for: id) ?? ScreenConfiguration(screenID: id, screenName: "Display")
+        },
+        commit: { [weak self] configuration in
+            guard let self else { return false }
+            self.mutateConfiguration(for: configuration.screenID) { $0 = configuration }
+            guard self.saveAndApply() else { return false }
+            self.refreshPreview()
+            return true
+        }
+    )
+
     private var playbackSuspensionReasons: Set<PlaybackSuspensionReason> = []
+    private var optimizationCancellable: AnyCancellable?
+    private(set) lazy var optimization = VideoOptimizationCoordinator(
+        optimizer: videoOptimizer,
+        files: videoFiles,
+        settings: { [weak self] in self?.settings ?? WallpaperSettings() },
+        commit: { [weak self] video, path, profile, metadata in
+            self?.commitPerformanceCopy(for: video, path: path, profile: profile, metadata: metadata) ?? false
+        }
+    )
+    var optimizationProgress: VideoOptimizationProgress? { optimization.progress }
     private var integrationRefreshGeneration = 0
     private var isFinalizingScreenSaverUpdate = false
     private var isInitializing = true
@@ -87,6 +111,9 @@ final class WallpaperStore: ObservableObject {
             settings = WallpaperSettings()
         }
         lastPersistedSettings = settings
+        optimizationCancellable = optimization.objectWillChange.sink { [weak self] in
+            self?.objectWillChange.send()
+        }
 
         if loadResult.allowsDestructiveCleanup {
             videoFiles.removeOrphanedOptimizedFiles(
@@ -250,18 +277,54 @@ final class WallpaperStore: ObservableObject {
         let knownIDs = Set(settings.videos.map(\.id))
         let additions = videoIDs.filter { knownIDs.contains($0) }
         guard !additions.isEmpty else { return }
-        mutateConfiguration(for: screenID) { configuration in
-            configuration.videoIDs = VideoLibraryLogic.assigning(
-                additions,
-                to: configuration.videoIDs,
-                mode: configuration.mode
-            )
+        editConfiguration(for: screenID, actionName: "Assign Videos") { configuration in
+            configuration.videoIDs = VideoLibraryLogic.assigning(additions, to: configuration.videoIDs, mode: configuration.mode)
             if !configuration.videoIDs.contains(configuration.startVideoID ?? "") {
                 configuration.startVideoID = configuration.videoIDs.first
             }
         }
-        saveAndApply()
-        refreshPreview()
+    }
+
+    var libraryStorage: VideoLibraryStorage {
+        VideoLibraryStorage(videos: settings.videos, screens: settings.screens)
+    }
+
+    func replaceLibraryVideo(_ videoID: String, from sourceURL: URL) async {
+        guard !recoveringVideoIDs.contains(videoID),
+              let original = settings.videos.first(where: { $0.id == videoID }) else { return }
+        recoveringVideoIDs.insert(videoID)
+        defer { recoveringVideoIDs.remove(videoID) }
+        var replacement: ManagedVideo?
+        var committed = false
+        var optimizationWasInvalidated = false
+        defer {
+            if !committed, let replacement { videoImporter.removeManagedFiles(for: [replacement]) }
+            if optimizationWasInvalidated, settings.playbackQuality == .performance { optimizeExistingVideos() }
+        }
+        do {
+            let recovered = try await VideoLibraryRecovery(importer: videoImporter).replacement(for: original, from: sourceURL)
+            replacement = recovered
+            try Task.checkCancellation()
+            guard let index = settings.videos.firstIndex(where: { $0.id == videoID && $0.path == original.path }) else {
+                throw VideoLibraryRecoveryError.changedDuringRecovery
+            }
+            let previous = settings.videos[index]
+            optimization.invalidate()
+            optimizationWasInvalidated = true
+            settings.videos[index] = recovered
+            guard saveAndApply() else { return }
+            committed = true
+            refreshPreview()
+            do {
+                try videoFiles.deleteManagedFiles(for: previous, retaining: settings.videos)
+            } catch {
+                errorMessage = "The replacement was saved, but the previous managed files could not be removed: \(error.localizedDescription)"
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            errorMessage = "The video could not be replaced: \(error.localizedDescription)"
+        }
     }
 
     func usageCount(for videoID: String) -> Int {
@@ -282,7 +345,7 @@ final class WallpaperStore: ObservableObject {
         settings.videos.remove(at: index)
         guard saveAndApply() else { return false }
         do {
-            try videoFiles.deleteManagedFiles(for: video)
+            try videoFiles.deleteManagedFiles(for: video, retaining: settings.videos)
         } catch {
             errorMessage = "The video was removed from the library, but its managed file couldn’t be deleted: \(error.localizedDescription)"
         }
@@ -298,7 +361,7 @@ final class WallpaperStore: ObservableObject {
         var failureCount = 0
         for video in unused {
             do {
-                try videoFiles.deleteManagedFiles(for: video)
+                try videoFiles.deleteManagedFiles(for: video, retaining: settings.videos)
             } catch {
                 failureCount += 1
             }
@@ -309,42 +372,51 @@ final class WallpaperStore: ObservableObject {
     }
 
     func setMode(_ mode: PlaybackMode, for screenID: String) {
-        mutateConfiguration(for: screenID) { configuration in
-            configuration.changeMode(to: mode)
-        }
-        saveAndApply()
-        refreshPreview()
+        editConfiguration(for: screenID, actionName: "Change Playback Type") { $0.changeMode(to: mode) }
     }
 
     func setStartVideo(_ videoID: String, for screenID: String) {
-        mutateConfiguration(for: screenID) { configuration in
+        editConfiguration(for: screenID, actionName: "Change Starting Video") { configuration in
             guard configuration.videoIDs.contains(videoID) else { return }
             configuration.startVideoID = videoID
         }
-        saveAndApply()
-        refreshPreview()
     }
 
     func moveVideo(_ videoID: String, by offset: Int, for screenID: String) {
-        mutateConfiguration(for: screenID) { configuration in
-            guard let sourceIndex = configuration.videoIDs.firstIndex(of: videoID) else { return }
-            let destinationIndex = sourceIndex + offset
-            guard configuration.videoIDs.indices.contains(destinationIndex) else { return }
-            configuration.videoIDs.swapAt(sourceIndex, destinationIndex)
+        let configuration = configuration(for: screenID)
+        guard let source = configuration.videoIDs.firstIndex(of: videoID) else { return }
+        let target = source + offset
+        guard configuration.videoIDs.indices.contains(target) else { return }
+        moveVideos(from: IndexSet(integer: source), to: target > source ? target + 1 : target, for: screenID)
+    }
+
+    func moveVideos(from offsets: IndexSet, to destination: Int, for screenID: String) {
+        editConfiguration(for: screenID, actionName: "Reorder Playlist") { configuration in
+            guard configuration.mode == .playlist else { return }
+            configuration.videoIDs = PlaylistEditing.moving(configuration.videoIDs, from: offsets, to: destination)
         }
-        saveAndApply()
     }
 
     func removeVideo(_ videoID: String, from screenID: String) {
-        mutateConfiguration(for: screenID) { configuration in
-            configuration.videoIDs.removeAll { $0 == videoID }
-            configuration.stashedPlaylistVideoIDs.removeAll { $0 == videoID }
-            if configuration.startVideoID == videoID {
+        removeVideos([videoID], from: screenID)
+    }
+
+    func removeVideos(_ videoIDs: Set<String>, from screenID: String) {
+        editConfiguration(for: screenID, actionName: "Remove Assignments") { configuration in
+            configuration.videoIDs.removeAll { videoIDs.contains($0) }
+            configuration.stashedPlaylistVideoIDs.removeAll { videoIDs.contains($0) }
+            if !configuration.videoIDs.contains(configuration.startVideoID ?? "") {
                 configuration.startVideoID = configuration.videoIDs.first
             }
         }
-        saveAndApply()
-        refreshPreview()
+    }
+
+    private func editConfiguration(
+        for screenID: String,
+        actionName: String,
+        mutation: (inout ScreenConfiguration) -> Void
+    ) {
+        assignmentEditor.edit(for: screenID, actionName: actionName, mutation: mutation)
     }
 
     func setMuted(_ muted: Bool) {
@@ -382,36 +454,34 @@ final class WallpaperStore: ObservableObject {
         }
         refreshPreview()
         if settings.playbackQuality == .performance {
-            activeOptimizationID = nil
-            optimizationTask?.cancel()
+            optimization.invalidate()
             optimizeExistingVideos()
         }
     }
 
-    func optimizeExistingVideos() {
-        guard playbackSuspensionReasons.isEmpty else {
-            optimizationShouldResumeAfterPlayback = true
-            return
-        }
-        guard optimizationTask == nil else {
-            optimizationRestartRequested = true
-            return
-        }
-        optimizationRestartRequested = false
-        let profile = settings.optimizationProfile
-        let optimizationID = UUID()
-        activeOptimizationID = optimizationID
-        optimizationTask = Task { @MainActor [weak self] in
-            await self?.runOptimization(profile: profile, optimizationID: optimizationID)
-        }
-    }
+    func optimizeExistingVideos() { optimization.enqueue() }
 
-    func cancelOptimization() {
-        optimizationShouldResumeAfterPlayback = false
-        optimizationRestartRequested = false
-        activeOptimizationID = nil
-        optimizationTask?.cancel()
-        optimizationProgress = nil
+    func retryOptimization(for videoID: String) { optimization.enqueue([videoID]) }
+
+    func cancelOptimization() { optimization.cancel() }
+
+    private func commitPerformanceCopy(
+        for video: ManagedVideo,
+        path: String,
+        profile: VideoOptimizationProfile,
+        metadata: VideoTechnicalMetadata?
+    ) -> Bool {
+        guard let index = settings.videos.firstIndex(where: { $0.id == video.id && $0.path == video.path }) else {
+            return false
+        }
+        let previousPath = settings.videos[index].optimizedPath
+        settings.videos[index].optimizedPath = path
+        settings.videos[index].optimizedProfile = profile
+        if settings.videos[index].sourceMetadata == nil { settings.videos[index].sourceMetadata = metadata }
+        guard saveAndApply() else { return false }
+        refreshPreview()
+        if let previousPath, previousPath != path { videoFiles.removeOptimizedFileIfOwned(atPath: previousPath) }
+        return true
     }
 
     var demandingVideoCount: Int {
@@ -435,17 +505,10 @@ final class WallpaperStore: ObservableObject {
         })
     }
 
-    var optimizedStorageBytes: Int64 {
-        settings.videos.reduce(0) { total, video in
-            guard let path = video.optimizedPath,
-                  let attributes = try? FileManager.default.attributesOfItem(atPath: path),
-                  let size = attributes[.size] as? NSNumber else { return total }
-            return total + size.int64Value
-        }
-    }
+    var optimizedStorageBytes: Int64 { libraryStorage.performanceBytes }
 
     func deleteOptimizedCopies() {
-        cancelOptimization()
+        optimization.invalidate()
         let pathsToDelete = settings.videos.compactMap(\.optimizedPath)
         for index in settings.videos.indices {
             settings.videos[index].optimizedPath = nil
@@ -667,32 +730,22 @@ final class WallpaperStore: ObservableObject {
     }
 
     private func refreshVideoMetadata() async {
-        var changed = false
-        for videoID in settings.videos.map(\.id) {
-            guard !Task.isCancelled,
-                  let index = settings.videos.firstIndex(where: { $0.id == videoID }),
-                  settings.videos[index].sourceMetadata == nil else { continue }
-            if let metadata = try? await videoOptimizer.metadata(for: settings.videos[index].url) {
-                settings.videos[index].sourceMetadata = metadata
-                changed = true
-            }
-        }
+        let changed = await VideoLibraryRefresher.refresh(
+            videos: { self.settings.videos },
+            needsRefresh: { $0.sourceMetadata == nil },
+            load: { try? await self.videoOptimizer.metadata(for: $0) },
+            apply: { self.settings.videos[$0].sourceMetadata = $1 }
+        )
         if changed { saveAndApply() }
     }
 
     private func refreshVideoFingerprints() async {
-        var changed = false
-        for videoID in settings.videos.map(\.id) {
-            guard !Task.isCancelled,
-                  let index = settings.videos.firstIndex(where: { $0.id == videoID }),
-                  settings.videos[index].contentFingerprint.map(
-                      VideoContentFingerprint.isCurrent
-                  ) != true else { continue }
-            if let fingerprint = await contentFingerprint(for: settings.videos[index].url) {
-                settings.videos[index].contentFingerprint = fingerprint
-                changed = true
-            }
-        }
+        let changed = await VideoLibraryRefresher.refresh(
+            videos: { self.settings.videos },
+            needsRefresh: { $0.contentFingerprint.map(VideoContentFingerprint.isCurrent) != true },
+            load: { await self.contentFingerprint(for: $0) },
+            apply: { self.settings.videos[$0].contentFingerprint = $1 }
+        )
         if changed { saveAndApply() }
     }
 
@@ -702,147 +755,18 @@ final class WallpaperStore: ObservableObject {
         }.value
     }
 
-    private func runOptimization(
-        profile: VideoOptimizationProfile,
-        optimizationID: UUID
-    ) async {
-        defer {
-            let shouldRestart = optimizationRestartRequested
-            optimizationRestartRequested = false
-            if activeOptimizationID == optimizationID {
-                activeOptimizationID = nil
-            }
-            optimizationTask = nil
-            optimizationProgress = nil
-            if settings.playbackQuality == .performance, shouldRestart {
-                optimizeExistingVideos()
-            }
-        }
-        let videoIDs = settings.videos.map(\.id)
-        var failures: [String] = []
-
-        for (position, videoID) in videoIDs.enumerated() {
-            guard !Task.isCancelled,
-                  activeOptimizationID == optimizationID,
-                  settings.optimizationProfile == profile,
-                  let index = settings.videos.firstIndex(where: { $0.id == videoID }) else { return }
-            let video = settings.videos[index]
-            if video.optimizedProfile == profile,
-               let path = video.optimizedPath,
-               FileManager.default.isReadableFile(atPath: path) {
-                optimizationProgress = VideoOptimizationProgress(
-                    completedCount: position + 1,
-                    totalCount: videoIDs.count,
-                    currentVideoName: nil,
-                    currentFraction: 0
-                )
-                continue
-            }
-
-            optimizationProgress = VideoOptimizationProgress(
-                completedCount: position,
-                totalCount: videoIDs.count,
-                currentVideoName: video.displayName,
-                currentFraction: 0
-            )
-            do {
-                let directory = try videoFiles.optimizedVideosDirectory()
-                let profileName = profile == .efficient ? "1440p60" : "4k60"
-                let destination = directory
-                    .appendingPathComponent("\(video.id)-\(profileName)-\(UUID().uuidString)")
-                    .appendingPathExtension("mp4")
-                do {
-                    try await videoOptimizer.optimize(
-                        sourceURL: video.url,
-                        destinationURL: destination,
-                        profile: profile
-                    ) { [weak self] fraction in
-                        Task { @MainActor [weak self] in
-                            guard let self,
-                                  self.activeOptimizationID == optimizationID,
-                                  self.settings.optimizationProfile == profile else { return }
-                            self.optimizationProgress = VideoOptimizationProgress(
-                                completedCount: position,
-                                totalCount: videoIDs.count,
-                                currentVideoName: video.displayName,
-                                currentFraction: fraction
-                            )
-                        }
-                    }
-                    guard FileManager.default.isReadableFile(atPath: destination.path) else {
-                        throw VideoOptimizationError.writerFailed(nil)
-                    }
-                    try FileManager.default.setAttributes(
-                        [.posixPermissions: 0o600],
-                        ofItemAtPath: destination.path
-                    )
-                } catch {
-                    try? FileManager.default.removeItem(at: destination)
-                    throw error
-                }
-
-                guard !Task.isCancelled,
-                      settings.playbackQuality == .performance,
-                      settings.optimizationProfile == profile,
-                      let currentIndex = settings.videos.firstIndex(where: { $0.id == videoID }) else {
-                    try? FileManager.default.removeItem(at: destination)
-                    return
-                }
-                let previousPath = settings.videos[currentIndex].optimizedPath
-                settings.videos[currentIndex].optimizedPath = destination.path
-                settings.videos[currentIndex].optimizedProfile = profile
-                if settings.videos[currentIndex].sourceMetadata == nil {
-                    settings.videos[currentIndex].sourceMetadata = try? await videoOptimizer.metadata(
-                        for: video.url
-                    )
-                }
-                guard saveAndApply() else {
-                    try? FileManager.default.removeItem(at: destination)
-                    return
-                }
-                refreshPreview()
-                if let previousPath, previousPath != destination.path {
-                    videoFiles.removeOptimizedFileIfOwned(atPath: previousPath)
-                }
-            } catch is CancellationError {
-                return
-            } catch {
-                failures.append(video.displayName)
-            }
-        }
-
-        if !failures.isEmpty {
-            errorMessage = "Performance copies could not be created for \(failures.count) video(s). Originals will be used instead."
-        }
-    }
-
     private func suspendOptimizationForPlayback(reason: PlaybackSuspensionReason) {
-        let wasSuspended = !playbackSuspensionReasons.isEmpty
         playbackSuspensionReasons.insert(reason)
         inlinePreviewPolicy.competingPlaybackIsActive = true
         updateInlinePreviewPlayback()
-        guard !wasSuspended, settings.playbackQuality == .performance else { return }
-        optimizationShouldResumeAfterPlayback = optimizationTask != nil || settings.videos.contains {
-            guard $0.optimizedProfile == settings.optimizationProfile,
-                  let path = $0.optimizedPath else { return true }
-            return !FileManager.default.isReadableFile(atPath: path)
-        }
-        optimizationRestartRequested = false
-        activeOptimizationID = nil
-        optimizationTask?.cancel()
-        optimizationProgress = nil
+        optimization.suspend(reason)
     }
 
     private func resumeOptimizationAfterPlayback(reason: PlaybackSuspensionReason) {
-        guard playbackSuspensionReasons.remove(reason) != nil else { return }
+        playbackSuspensionReasons.remove(reason)
         inlinePreviewPolicy.competingPlaybackIsActive = !playbackSuspensionReasons.isEmpty
         updateInlinePreviewPlayback()
-        guard playbackSuspensionReasons.isEmpty else { return }
-        let shouldResume = optimizationShouldResumeAfterPlayback
-        optimizationShouldResumeAfterPlayback = false
-        if shouldResume {
-            optimizeExistingVideos()
-        }
+        optimization.resume(reason)
     }
 
     @discardableResult
@@ -1036,11 +960,6 @@ final class WallpaperStore: ObservableObject {
                 + "\(cleanupFailureCount) redundant file\(suffix) couldn’t be removed."
         }
     }
-}
-
-private enum PlaybackSuspensionReason: Hashable {
-    case preview
-    case nativeScreenSaver
 }
 
 private enum WallpaperPersistenceError: LocalizedError {

@@ -44,7 +44,7 @@ For a drag-to-Applications installer, download **My-Wallpaper.dmg** from the Git
 1. Open **My Wallpaper** and select a display card.
 2. Choose **Single video** or **Playlist**, then use **Add From Library** to reuse imported videos or **Import New** to review and copy new files into the shared library.
 3. Use **Start here** to choose which playlist item plays first.
-4. Reorder videos with **Go Up** and **Go Down**. The playlist loops continuously.
+4. Drag playlist rows to reorder them, or use **Go Up** and **Go Down**. Command-click or Shift-click to select multiple assignments, then choose **Remove Selected**. Use **Undo** / **Redo** or the Edit menu to undo assignment, order, playback-type, and starting-video changes. The playlist loops continuously.
 5. Use **Preview all displays** to verify the videos and scaling. Preview is non-locking and ends automatically after 45 seconds.
 
 ![Displays and playlist configuration](assets/readme-displays.png)
@@ -55,6 +55,10 @@ Open **Video Library** to search every imported video, filter for high-load orig
 
 When upgrading from the per-display import model, My Wallpaper automatically consolidates confirmed legacy copies with matching names, sizes, and sampled content fingerprints. Display assignments, playlist order, and starting-video selections are remapped to the retained shared-library record.
 
+The **Missing** filter identifies originals that are missing or unreadable. Select an item and choose **Replace Video…** to copy a readable MOV, MP4, or M4V into the library while keeping the item's name, display assignments, playlist order, and starting-video selection. The previous managed files are removed only after the replacement settings are saved, and files still referenced by another item are retained. Recovery invalidates obsolete performance copies so they can be regenerated.
+
+The library shows original storage and performance-copy storage separately. Deletion confirmations preview the estimated space reclaimed; **Remove Unused** also protects assignments stored for Playlist mode and disconnected displays.
+
 ![Shared Video Library with reusable videos and display usage details](assets/readme-library.png)
 
 ## Optional Performance Mode
@@ -64,7 +68,7 @@ Open **Preferences → Performance Mode** to choose between:
 - **Original Quality**: plays imported files unchanged.
 - **Performance Mode**: requires Apple's hardware HEVC encoder and creates local playback copies capped at 60 fps. The recommended default is **1440p / 60 FPS**; **4K / 60 FPS** is available for higher-resolution displays. Optimization pauses during Preview and native screen-saver playback so it does not compete for the media engine.
 
-Conversion runs locally and shows per-video and overall progress. My Wallpaper automatically uses each original until its performance copy is ready, and falls back to the original if conversion fails. The same optimized file is reused anywhere that managed video appears, including multiple display assignments.
+Conversion runs locally and shows per-video and overall progress. Each library item exposes Queued, Optimizing, Paused, Ready, or Failed status. Select a failed item to read the failure reason and retry just that video. Playback pauses retain the queue until both preview and native screen-saver playback finish; cancelling the queue prevents automatic resumption. My Wallpaper automatically uses each original until its performance copy is ready, and falls back to the original if conversion fails. The same optimized file is reused anywhere that managed video appears, including multiple display assignments.
 
 Originals are never modified. **Delete Performance Copies** reclaims their storage without removing imported videos or display assignments. High-frame-rate, high-bitrate, and unusually demanding originals are marked **High Load** in the playlist UI.
 
@@ -120,6 +124,14 @@ Requires macOS 14 or newer. Building needs Apple's command-line developer tools;
 open "dist/My Wallpaper.app"
 ```
 
+For a build-and-run workflow (also wired to the Codex **Run** action):
+
+```sh
+./script/build_and_run.sh --verify
+```
+
+This stops the running app, packages a debug build, and opens the new bundle. Optional `--debug`, `--logs`, and `--telemetry` modes support local debugging and unified logs. `MY_WALLPAPER_SDK` overrides the SDK for this workflow too.
+
 For a debug build:
 
 ```sh
@@ -167,6 +179,19 @@ For signed distribution, configure these secrets in the protected `production-re
 - `APPLE_ID`, `APPLE_TEAM_ID`, and `APPLE_APP_PASSWORD`: Apple notarization credentials.
 
 All seven values are required for a tag; the workflow fails closed rather than publishing an unsigned or unnotarized release. Keep them only in GitHub environment secrets, require reviewer approval for that environment, and never store them in the repository. Third-party workflow actions are pinned to independently verified upstream commit SHAs rather than mutable version tags.
+
+## Workflow checks
+
+Run `swift test` with full Xcode, plus the standalone suites:
+
+```sh
+./scripts/test-saver-manifest.sh
+./scripts/test-login-launch-policy.sh
+./scripts/test-video-library-workflow.sh
+./scripts/test-improvement-workflows.sh
+```
+
+The improvement suite runs without XCTest and covers optimization pause/resume, failure/retry, obsolete completions, deletion during encoding, persistence rejection, replacement identity, assignment undo/redo, storage accounting, missing files, and main-window reopening. It uses temporary files and controlled encoders without changing the user's library. Manual pointer, keyboard, and accessibility checks are documented in [Manual smoke tests](docs/MANUAL-SMOKE-TESTS.md).
 
 ## Data and privacy
 

@@ -346,3 +346,5 @@ expect(
 )
 
 print("Video library workflow tests passed.")
+
+await runVideoLibraryRefreshTests()

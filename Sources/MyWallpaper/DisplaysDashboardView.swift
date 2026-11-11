@@ -260,11 +260,11 @@ struct DisplaysDashboardView: View {
                         .font(RetroFont.body(size: 11))
                         .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
                 } else {
-                    playlistRows(videos, configuration: configuration, screenID: screenID)
+                    PlaylistEditorView(store: store, screenID: screenID)
                 }
 
                 if configuration.mode == .playlist, !videos.isEmpty {
-                    Text("↻ START MARKS THE FIRST FILE. THE LIST CONTINUES IN ORDER AND LOOPS FOREVER.")
+                    Text("DRAG ROWS TO REORDER. START MARKS THE FIRST FILE; THE LIST LOOPS FOREVER.")
                         .font(RetroFont.body(size: 9))
                         .foregroundStyle(RetroPalette.secondaryInk)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -305,30 +305,4 @@ struct DisplaysDashboardView: View {
         }
     }
 
-    private func playlistRows(
-        _ videos: [ManagedVideo],
-        configuration: ScreenConfiguration,
-        screenID: String
-    ) -> some View {
-        VStack(spacing: 0) {
-            ForEach(Array(videos.enumerated()), id: \.element.id) { index, video in
-                DisplayPlaylistRow(
-                    video: video,
-                    index: index,
-                    isStartVideo: video.id == configuration.startVideoID,
-                    allowsReordering: configuration.mode == .playlist,
-                    canMoveUp: index > 0,
-                    canMoveDown: index < videos.count - 1,
-                    setAsStart: { store.setStartVideo(video.id, for: screenID) },
-                    moveUp: { store.moveVideo(video.id, by: -1, for: screenID) },
-                    moveDown: { store.moveVideo(video.id, by: 1, for: screenID) },
-                    remove: { store.removeVideo(video.id, from: screenID) }
-                )
-                if index < videos.count - 1 {
-                    Rectangle().fill(RetroPalette.ink).frame(height: 1)
-                }
-            }
-        }
-        .overlay { Rectangle().stroke(RetroPalette.ink, lineWidth: 1) }
-    }
 }

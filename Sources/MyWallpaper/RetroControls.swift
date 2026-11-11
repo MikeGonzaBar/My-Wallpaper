@@ -6,6 +6,9 @@ struct RetroNavigationItem: View {
     let selected: Bool
     let action: () -> Void
 
+    @Environment(\.showsKeyboardFocus) private var showsKeyboardFocus
+    @FocusState private var isFocused: Bool
+
     var body: some View {
         Button(action: action) {
             HStack(spacing: 12) {
@@ -27,6 +30,17 @@ struct RetroNavigationItem: View {
             .overlay { Rectangle().stroke(RetroPalette.ink, lineWidth: selected ? 0 : 1) }
         }
         .buttonStyle(.plain)
+        .focusEffectDisabled()
+        .focused($isFocused)
+        .overlay {
+            if isFocused && showsKeyboardFocus {
+                Rectangle()
+                    .inset(by: 4)
+                    .stroke(selected ? RetroPalette.paper : RetroPalette.ink,
+                            style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
+                    .allowsHitTesting(false)
+            }
+        }
         .accessibilityAddTraits(selected ? .isSelected : [])
         .retroHoverEffect()
         .padding(.leading, selected ? 6 : 0)

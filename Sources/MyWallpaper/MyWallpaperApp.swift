@@ -9,6 +9,7 @@ struct MyWallpaperApp: App {
     var body: some Scene {
         WindowGroup("My Wallpaper", id: "main") {
             ContentView(store: store)
+                .modifier(KeyboardNavigationModifier())
                 .frame(minWidth: 1_040, minHeight: 680)
                 .preferredColorScheme(store.appearanceMode.colorScheme)
                 .overlay { DiagonalAppearanceTransition(trigger: store.appearanceTransitionID) }
@@ -32,6 +33,7 @@ struct MyWallpaperApp: App {
 
         Settings {
             SettingsView(store: store)
+                .modifier(KeyboardNavigationModifier())
                 .frame(minWidth: 520, idealWidth: 620, maxWidth: 820)
                 .frame(minHeight: 640, idealHeight: 760, maxHeight: 900)
                 .preferredColorScheme(store.appearanceMode.colorScheme)

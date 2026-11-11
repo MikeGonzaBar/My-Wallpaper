@@ -23,6 +23,8 @@ swiftc \
     "$repo_dir/Sources/MyWallpaper/WallpaperSettings.swift" \
     "$repo_dir/Sources/MyWallpaper/VideoContentFingerprint.swift" \
     "$repo_dir/Sources/MyWallpaper/VideoLibraryModels.swift" \
+    "$repo_dir/Sources/MyWallpaper/VideoLibraryRefresher.swift" \
+    "$repo_dir/Tests/MyWallpaperLibraryWorkflowTests/VideoLibraryRefreshTests.swift" \
     "$repo_dir/Tests/MyWallpaperLibraryWorkflowTests/main.swift"
 
 "$test_binary"

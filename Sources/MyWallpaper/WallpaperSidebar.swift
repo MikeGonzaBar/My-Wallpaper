@@ -19,7 +19,6 @@ struct WallpaperSidebar: View {
                     .interpolation(.none)
                     .scaledToFit()
                     .frame(width: 72, height: 72)
-                    .overlay { Rectangle().stroke(RetroPalette.ink, lineWidth: 1) }
 
                 Text("MY WALLPAPER")
                     .font(RetroFont.headline(size: 18))
@@ -39,7 +38,7 @@ struct WallpaperSidebar: View {
                 RetroDivider()
                 Text("LOCAL PROCESS")
                     .font(RetroFont.label(size: 9))
-                Text("VIDEOS NEVER LEAVE\nTHIS MACINTOSH.")
+                Text("VIDEOS NEVER LEAVE\nTHIS MAC.")
                     .font(RetroFont.body(size: 9))
                     .foregroundStyle(RetroPalette.secondaryInk)
                     .lineSpacing(3)

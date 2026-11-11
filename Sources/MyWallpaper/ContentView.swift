@@ -2,6 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
+    @Environment(\.undoManager) private var undoManager
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var store: WallpaperStore
     @StateObject private var importFlow = VideoImportFlowCoordinator()
@@ -62,6 +63,7 @@ struct ContentView: View {
             )
         }
         .onAppear {
+            store.assignmentUndoManager = undoManager
             store.refreshScreens()
             reconcileSelectedScreen(with: store.availableScreens)
             store.setDisplaysPageVisible(selectedSection == .displays)

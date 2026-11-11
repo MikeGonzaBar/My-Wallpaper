@@ -2,6 +2,7 @@ import SwiftUI
 
 struct PerformanceModePanel: View {
     @ObservedObject var store: WallpaperStore
+    @State private var isConfirmingCleanup = false
 
     var body: some View {
         RetroWindow(title: "PERFORMANCE MODE") {
@@ -33,11 +34,30 @@ struct PerformanceModePanel: View {
                         onSelect: store.setOptimizationProfile
                     )
                     optimizationStatus
+                    let failures = store.optimization.states.values.filter {
+                        if case .failed = $0 { return true }
+                        return false
+                    }.count
+                    if failures > 0 {
+                        Text("\(failures) FAILED. SELECT A VIDEO IN THE LIBRARY FOR DETAILS AND RETRY.")
+                            .font(RetroFont.body(size: 9))
+                    }
+                    if store.optimization.hasPendingWork, store.optimizationProgress == nil {
+                        Text("OPTIMIZATION PAUSED DURING PLAYBACK.").font(RetroFont.body(size: 9))
+                        Button("CANCEL QUEUE") { store.cancelOptimization() }
+                            .buttonStyle(RetroButtonStyle(compact: true))
+                    }
                 } else if store.demandingVideoCount > 0 {
                     Text("⚠ \(store.demandingVideoCount) HIGH-LOAD VIDEO(S) MAY STUTTER IN ORIGINAL QUALITY.")
                         .font(RetroFont.label(size: 9))
                 }
             }
+        }
+        .confirmationDialog("DELETE PERFORMANCE COPIES?", isPresented: $isConfirmingCleanup, titleVisibility: .visible) {
+            Button("DELETE COPIES", role: .destructive) { store.deleteOptimizedCopies() }
+            Button("CANCEL", role: .cancel) {}
+        } message: {
+            Text("Estimated space reclaimed: \(VideoLibraryStorage.formatted(store.optimizedStorageBytes)). Imported originals and display assignments remain available.")
         }
     }
 
@@ -78,8 +98,8 @@ struct PerformanceModePanel: View {
                     Button("OPTIMIZE EXISTING VIDEOS") { store.optimizeExistingVideos() }
                         .buttonStyle(RetroButtonStyle(primary: true, compact: true))
                         .disabled(store.settings.videos.isEmpty)
-                    if store.optimizedVideoCount > 0 {
-                        Button("DELETE PERFORMANCE COPIES") { store.deleteOptimizedCopies() }
+                    if store.optimizedStorageBytes > 0 {
+                        Button("DELETE PERFORMANCE COPIES…") { isConfirmingCleanup = true }
                             .buttonStyle(RetroButtonStyle(compact: true))
                     }
                 }
@@ -105,6 +125,6 @@ struct PerformanceModePanel: View {
             fromByteCount: store.estimatedOptimizationBytes,
             countStyle: .file
         )
-        return "LOCAL STORAGE: \(actual) USED / ABOUT \(estimate) WHEN COMPLETE. ORIGINALS REMAIN AVAILABLE."
+        return "ORIGINALS: \(VideoLibraryStorage.formatted(store.libraryStorage.originalBytes)). PERFORMANCE COPIES: \(actual) / ABOUT \(estimate) WHEN COMPLETE."
     }
 }

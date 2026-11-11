@@ -102,9 +102,11 @@ private actor VideoThumbnailCache {
         generator.appliesPreferredTrackTransform = true
         generator.maximumSize = maximumSize
         do {
+            let duration = try await asset.load(.duration).seconds
+            let sampleTime = duration.isFinite && duration > 0 ? min(3, duration * 0.1) : 0.25
             let result = try await withTaskCancellationHandler {
                 try await generator.image(
-                    at: CMTime(seconds: 0.25, preferredTimescale: 600)
+                    at: CMTime(seconds: sampleTime, preferredTimescale: 600)
                 )
             } onCancel: {
                 generator.cancelAllCGImageGeneration()

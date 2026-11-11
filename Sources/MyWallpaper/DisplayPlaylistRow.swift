@@ -4,6 +4,7 @@ struct DisplayPlaylistRow: View {
     let video: ManagedVideo
     let index: Int
     let isStartVideo: Bool
+    var isSelected = false
     let allowsReordering: Bool
     let canMoveUp: Bool
     let canMoveDown: Bool
@@ -72,6 +73,8 @@ struct DisplayPlaylistRow: View {
         .padding(.horizontal, 10)
         .frame(minHeight: 40)
         .background(isStartVideo ? RetroPalette.surfaceHighest : RetroPalette.paper)
+        .overlay { Rectangle().stroke(RetroPalette.ink, lineWidth: isSelected ? 2 : 0) }
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 

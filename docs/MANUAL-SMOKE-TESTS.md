@@ -35,6 +35,28 @@ Expected: local input exits an armed preview while the app is active. App deacti
 4. Remove an unused library item and confirm the managed file is removed.
 5. Enable Performance Mode, allow optimization to finish, then delete optimized copies. Confirm original videos remain playable.
 
+## Playlist editing and undo
+
+1. Assign at least four videos in Playlist mode. Drag a row to the beginning and end; confirm starting-video identity stays the same.
+2. Command-click two nonadjacent rows and Shift-click a range. Confirm each selected row has a visible outline.
+3. Choose **Remove Selected**, then **Undo** and **Redo**. Confirm only display assignments change; the shared library stays intact.
+4. Use the row's move buttons with keyboard focus. Confirm order, starting video, and playback type can be undone from the Edit menu.
+5. Undo an assignment change after importing a new library item. Confirm the new item remains in the library.
+
+## Recovery, optimization status, and storage
+
+Use a disposable test library for file-removal steps.
+
+1. Quit the app and move one disposable managed original out of Application Support. Reopen and select **Video Library → Missing**.
+2. Select the missing item and choose **Replace Video…**. Choose a readable supported movie. Confirm the name, every display assignment, playlist order, and starting-video identity survive, including after relaunch.
+3. Cancel the replacement picker, then retry with an unreadable or invalid movie. Confirm the original library record stays intact and a meaningful error appears for a failed replacement.
+4. Enable Performance Mode. Confirm each pending video's status changes from Queued to Optimizing to Ready. Select an item to inspect its status.
+5. Start Preview All Displays while conversion is active. Confirm the queue shows Paused, then resumes when preview ends. Repeat with the native screen saver.
+6. Cancel a paused queue, end playback, and confirm optimization stays cancelled until requested again.
+7. For a failed conversion, confirm its details show the failure reason and **Retry Performance Copy** retries that item.
+8. Confirm original and performance-copy storage totals are separate. Open and cancel each cleanup confirmation; verify its estimated reclaimed space is shown.
+9. Delete performance copies. Confirm totals update, originals remain readable, and assigned videos still play.
+
 ## Screen saver integration
 
 1. Install or update the bundled screen saver from Preferences.

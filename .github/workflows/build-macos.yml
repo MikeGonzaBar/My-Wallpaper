@@ -37,6 +37,7 @@ jobs:
           ./scripts/test-saver-manifest.sh
           ./scripts/test-login-launch-policy.sh
           ./scripts/test-video-library-workflow.sh
+          ./scripts/test-improvement-workflows.sh
       - name: Enforce strict concurrency readiness
         run: swift build -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
       - name: Build clean universal release app
